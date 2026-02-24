@@ -28,3 +28,7 @@ frontend/.vite/
 # OS
 .DS_Store
 Thumbs.db
+
+# Cloudflare tunnel
+cloudflared*.exe
+config.yml
