@@ -7,6 +7,13 @@ import {
   type ColumnDef,
   type SortingState,
 } from "@tanstack/react-table";
+
+declare module "@tanstack/react-table" {
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  interface ColumnMeta<TData, TValue> {
+    mobileHidden?: boolean;
+  }
+}
 import type { RankedSpread } from "@/types";
 import { useScannerStore } from "@/store/scannerStore";
 import {
@@ -77,6 +84,7 @@ export const ResultsTable: React.FC = () => {
       {
         id: "expiry",
         header: "Expiry",
+        meta: { mobileHidden: true },
         accessorFn: (r) => r.spread.expiration,
         cell: (info) => (
           <span className="text-gray-300 text-xs">
@@ -88,6 +96,7 @@ export const ResultsTable: React.FC = () => {
       {
         id: "dte",
         header: () => <span>DTE <InfoTooltip content={TOOLTIPS.dte_col} /></span>,
+        meta: { mobileHidden: true },
         accessorFn: (r) => r.spread.dte,
         cell: (info) => (
           <span className="text-gray-300 text-xs font-mono">
@@ -99,6 +108,7 @@ export const ResultsTable: React.FC = () => {
       {
         id: "iv_rank",
         header: () => <span>IV Rank <InfoTooltip content={TOOLTIPS.iv_rank_col} /></span>,
+        meta: { mobileHidden: true },
         accessorFn: (r) => r.spread.iv_rank,
         cell: (info) => (
           <span className="text-gray-300 text-xs font-mono">
@@ -143,6 +153,7 @@ export const ResultsTable: React.FC = () => {
       {
         id: "risk_score",
         header: () => <span>Risk <InfoTooltip content={TOOLTIPS.risk_col} /></span>,
+        meta: { mobileHidden: true },
         accessorFn: (r) => r.risk_score.composite_score,
         cell: (info) => {
           const score = info.getValue() as number;
@@ -168,6 +179,7 @@ export const ResultsTable: React.FC = () => {
       {
         id: "max_profit",
         header: "Max Profit",
+        meta: { mobileHidden: true },
         accessorFn: (r) => r.spread.max_profit,
         cell: (info) => {
           const val = info.getValue() as number;
@@ -224,7 +236,7 @@ export const ResultsTable: React.FC = () => {
               {hg.headers.map((header) => (
                 <th
                   key={header.id}
-                  className="px-3 py-2 text-left text-xs font-medium text-gray-400 uppercase tracking-wider border-b border-gray-700 cursor-pointer hover:text-gray-200 select-none"
+                  className={`px-3 py-2 text-left text-xs font-medium text-gray-400 uppercase tracking-wider border-b border-gray-700 cursor-pointer hover:text-gray-200 select-none${header.column.columnDef.meta?.mobileHidden ? " hidden lg:table-cell" : ""}`}
                   style={{ width: header.getSize() }}
                   onClick={header.column.getToggleSortingHandler()}
                 >
@@ -266,7 +278,7 @@ export const ResultsTable: React.FC = () => {
                 }`}
               >
                 {row.getVisibleCells().map((cell) => (
-                  <td key={cell.id} className="px-3 py-2 max-w-0 overflow-hidden">
+                  <td key={cell.id} className={`px-3 py-2 max-w-0 overflow-hidden${cell.column.columnDef.meta?.mobileHidden ? " hidden lg:table-cell" : ""}`}>
                     {flexRender(cell.column.columnDef.cell, cell.getContext())}
                   </td>
                 ))}

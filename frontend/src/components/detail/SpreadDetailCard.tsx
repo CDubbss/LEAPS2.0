@@ -26,7 +26,7 @@ export const SpreadDetailCard: React.FC<Props> = ({ item }) => {
   return (
     <div className="bg-gray-800 rounded-lg p-4 space-y-4">
       {/* Header */}
-      <div className="flex items-start justify-between">
+      <div className="flex flex-wrap items-start justify-between gap-2">
         <div>
           <div className="flex items-center gap-2">
             <span className="text-2xl font-bold text-white">
@@ -161,7 +161,7 @@ const LegRow: React.FC<{ option: import("@/types").OptionQuote; label: string }>
         Bid {formatCurrency(option.bid)} / Ask {formatCurrency(option.ask)}
       </span>
     </div>
-    <div className="grid grid-cols-4 gap-x-2 gap-y-1 text-gray-400">
+    <div className="grid grid-cols-2 gap-x-2 gap-y-1 text-gray-400 lg:grid-cols-4">
       <span className="overflow-hidden truncate">IV <InfoTooltip content={TOOLTIPS.iv_pct} />: {formatIV(option.implied_volatility)}</span>
       <span className="overflow-hidden truncate">Δ <InfoTooltip content={TOOLTIPS.delta} />: {formatGreek(option.delta)}</span>
       <span className="overflow-hidden truncate">Γ <InfoTooltip content={TOOLTIPS.gamma} />: {formatGreek(option.gamma, 5)}</span>

@@ -14,10 +14,10 @@ function App() {
       <div className="flex flex-col h-screen bg-gray-950 text-white">
         {/* Top Nav */}
         <nav className="flex items-center gap-1 px-4 py-2 bg-gray-900 border-b border-gray-700 flex-shrink-0">
-          <div className="flex items-center gap-2 mr-6">
+          <div className="flex items-center gap-2 mr-4 lg:mr-6">
             <ScanIcon size={20} className="text-sky-400" />
-            <span className="text-lg font-bold text-white">Leaps2.0</span>
-            <span className="text-xs text-gray-500 ml-1">Options Scanner</span>
+            <span className="hidden sm:inline text-lg font-bold text-white">Leaps2.0</span>
+            <span className="hidden lg:inline text-xs text-gray-500 ml-1">Options Scanner</span>
           </div>
           <NavLink
             to="/"
@@ -42,7 +42,8 @@ function App() {
               }`
             }
           >
-            Options Chain
+            <span className="sm:hidden">Chain</span>
+            <span className="hidden sm:inline">Options Chain</span>
           </NavLink>
         </nav>
 
