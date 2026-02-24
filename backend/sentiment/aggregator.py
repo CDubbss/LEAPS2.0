@@ -4,7 +4,7 @@ Aggregates per-article SentimentResult objects into a single TickerSentiment.
 
 from datetime import datetime
 
-from backend.models.sentiment import SentimentResult, TickerSentiment
+from backend.models.sentiment import ArticleSentiment, NewsArticle, SentimentResult, TickerSentiment
 
 
 class SentimentAggregator:
@@ -21,6 +21,7 @@ class SentimentAggregator:
         self,
         symbol: str,
         results: list[SentimentResult],
+        articles: list[NewsArticle] | None = None,
         headlines: list[str] | None = None,
     ) -> TickerSentiment:
         if not results:
@@ -39,6 +40,21 @@ class SentimentAggregator:
         # Normalize to 0-100
         sentiment_score = round(((avg_compound + 1) / 2) * 100, 2)
 
+        # Build per-article breakdown
+        article_sentiments = []
+        for i, result in enumerate(results):
+            art = articles[i] if articles and i < len(articles) else None
+            article_sentiments.append(ArticleSentiment(
+                headline=art.title if art else result.text[:100],
+                url=art.url if art else "",
+                published_at=art.published_at if art else "",
+                source=art.source if art else "",
+                positive=round(result.positive, 4),
+                negative=round(result.negative, 4),
+                neutral=round(result.neutral, 4),
+                label=result.label,
+            ))
+
         return TickerSentiment(
             symbol=symbol,
             articles_analyzed=n,
@@ -50,6 +66,7 @@ class SentimentAggregator:
             sentiment_score=sentiment_score,
             top_headlines=(headlines or [])[:5],
             analyzed_at=datetime.utcnow().isoformat(),
+            article_sentiments=article_sentiments,
         )
 
     async def aggregate_batch(

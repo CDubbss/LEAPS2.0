@@ -58,7 +58,7 @@ export const ScannerPage: React.FC = () => {
 
       {/* Right: Detail Panel (shown when a spread is selected) */}
       {selectedSpread && (
-        <aside className="w-80 bg-gray-900 border-l border-gray-700 overflow-y-auto flex-shrink-0">
+        <aside className="w-96 bg-gray-900 border-l border-gray-700 overflow-y-auto flex-shrink-0">
           <div className="p-3 border-b border-gray-700">
             <h2 className="text-sm font-semibold text-white">
               Spread Details — Rank #{selectedSpread.rank}

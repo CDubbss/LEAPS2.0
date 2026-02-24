@@ -11,6 +11,7 @@ import {
 } from "recharts";
 import { sentimentColor, scoreColor } from "@/utils/formatting";
 import { Newspaper } from "lucide-react";
+import { SentimentArticleList } from "./SentimentArticleList";
 
 interface Props {
   sentiment: TickerSentiment;
@@ -98,6 +99,13 @@ export const SentimentScoreCard: React.FC<Props> = ({ sentiment }) => {
 
       {sentiment.articles_analyzed === 0 && (
         <p className="text-xs text-gray-500">No news articles found for this ticker.</p>
+      )}
+
+      {sentiment.article_sentiments?.length > 0 && (
+        <SentimentArticleList
+          articles={sentiment.article_sentiments}
+          symbol={sentiment.symbol}
+        />
       )}
     </div>
   );

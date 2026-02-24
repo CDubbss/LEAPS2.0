@@ -23,12 +23,14 @@ import {
 import { ArrowUpDown, ArrowUp, ArrowDown } from "lucide-react";
 import { InfoTooltip } from "@/components/ui/Tooltip";
 import { TOOLTIPS } from "@/utils/tooltips";
+import { TickerModal } from "@/components/ticker/TickerModal";
 
 export const ResultsTable: React.FC = () => {
   const { result, selectedSpread, selectSpread } = useScannerStore();
   const [sorting, setSorting] = useState<SortingState>([
     { id: "ml_score", desc: true },
   ]);
+  const [tickerItem, setTickerItem] = useState<RankedSpread | null>(null);
 
   const columns = useMemo<ColumnDef<RankedSpread>[]>(
     () => [
@@ -48,9 +50,12 @@ export const ResultsTable: React.FC = () => {
         header: "Ticker",
         accessorFn: (r) => r.spread.underlying,
         cell: (info) => (
-          <span className="font-bold text-white">
+          <button
+            className="font-bold text-sky-400 hover:text-sky-300 hover:underline block truncate w-full text-left"
+            onClick={(e) => { e.stopPropagation(); setTickerItem(info.row.original); }}
+          >
             {info.getValue() as string}
-          </span>
+          </button>
         ),
         size: 70,
       },
@@ -210,8 +215,9 @@ export const ResultsTable: React.FC = () => {
   }
 
   return (
+    <>
     <div className="flex-1 overflow-auto">
-      <table className="w-full text-sm border-collapse">
+      <table className="w-full text-sm border-collapse table-fixed">
         <thead className="bg-gray-800 sticky top-0 z-10">
           {table.getHeaderGroups().map((hg) => (
             <tr key={hg.id}>
@@ -260,7 +266,7 @@ export const ResultsTable: React.FC = () => {
                 }`}
               >
                 {row.getVisibleCells().map((cell) => (
-                  <td key={cell.id} className="px-3 py-2">
+                  <td key={cell.id} className="px-3 py-2 max-w-0 overflow-hidden">
                     {flexRender(cell.column.columnDef.cell, cell.getContext())}
                   </td>
                 ))}
@@ -270,5 +276,10 @@ export const ResultsTable: React.FC = () => {
         </tbody>
       </table>
     </div>
+
+    {tickerItem && (
+      <TickerModal item={tickerItem} onClose={() => setTickerItem(null)} />
+    )}
+    </>
   );
 };

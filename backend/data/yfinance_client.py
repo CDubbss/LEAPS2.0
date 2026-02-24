@@ -238,6 +238,25 @@ class YFinanceClient:
         rank = (iv - low) / (high - low) * 100
         return float(max(0.0, min(100.0, rank)))
 
+    async def get_historical_ohlc(self, symbol: str, period: str = "1y") -> list[dict]:
+        """Fetch daily OHLCV bars for candlestick chart."""
+
+        def _fetch():
+            hist = yf.Ticker(symbol).history(period=period, interval="1d")
+            bars = []
+            for ts, row in hist.iterrows():
+                bars.append({
+                    "time": ts.strftime("%Y-%m-%d"),
+                    "open": round(float(row["Open"]), 2),
+                    "high": round(float(row["High"]), 2),
+                    "low": round(float(row["Low"]), 2),
+                    "close": round(float(row["Close"]), 2),
+                    "volume": int(row["Volume"]),
+                })
+            return bars
+
+        return await _run_sync(_fetch)
+
     async def get_historical_volatility(self, symbol: str, days: int = 30) -> float:
         """Compute N-day historical volatility (annualized)."""
 

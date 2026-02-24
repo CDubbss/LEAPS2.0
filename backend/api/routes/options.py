@@ -13,6 +13,16 @@ from backend.models.options import OptionsChain
 router = APIRouter()
 
 
+@router.get("/historical/{symbol}/ohlc")
+async def get_historical_ohlc(
+    symbol: str,
+    period: str = "1y",
+    yf: YFinanceClient = Depends(get_yf_client),
+) -> list[dict]:
+    """OHLCV bars for candlestick chart. period: 1mo, 3mo, 6mo, 1y, 2y"""
+    return await yf.get_historical_ohlc(symbol.upper(), period)
+
+
 @router.get("/expirations/{symbol}", response_model=list[str])
 async def get_expirations(
     symbol: str,

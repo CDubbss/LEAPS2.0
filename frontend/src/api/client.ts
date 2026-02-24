@@ -1,6 +1,7 @@
 import axios from "axios";
 import type {
   FundamentalData,
+  OHLCBar,
   OptionsChain,
   ScannerFilters,
   ScannerResult,
@@ -54,6 +55,9 @@ export const optionsApi = {
 
   getQuote: (symbol: string): Promise<Record<string, number>> =>
     api.get(`/options/quote/${symbol}`).then((r) => r.data),
+
+  getHistoricalOHLC: (symbol: string, period = "1y"): Promise<OHLCBar[]> =>
+    api.get(`/options/historical/${symbol}/ohlc?period=${period}`).then((r) => r.data),
 };
 
 export const sentimentApi = {

@@ -66,6 +66,26 @@ export interface FundamentalData {
   fundamental_score: number | null;
 }
 
+export interface ArticleSentiment {
+  headline: string;
+  url: string;
+  published_at: string;
+  source: string;
+  positive: number;
+  negative: number;
+  neutral: number;
+  label: "positive" | "negative" | "neutral";
+}
+
+export interface OHLCBar {
+  time: string;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+}
+
 export interface TickerSentiment {
   symbol: string;
   articles_analyzed: number;
@@ -77,6 +97,7 @@ export interface TickerSentiment {
   sentiment_score: number;
   top_headlines: string[];
   analyzed_at: string;
+  article_sentiments: ArticleSentiment[];
 }
 
 export interface MLPrediction {

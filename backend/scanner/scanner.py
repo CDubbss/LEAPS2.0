@@ -290,7 +290,7 @@ class OptionsScanner:
         ttl = self.settings.CACHE_TTL_SENTIMENT
 
         async def fetch_one(symbol: str) -> TickerSentiment:
-            cache_key = f"sentiment:{symbol}"
+            cache_key = f"sentiment_v2:{symbol}"
             cached = await self.cache.get(cache_key)
             if cached:
                 return TickerSentiment(**cached)
@@ -308,9 +308,12 @@ class OptionsScanner:
                 return neutral
 
             scored = await self.sentiment_scorer.score_texts_async(texts)
+            # Filter articles to those with text (same ordering as scored)
+            scored_articles = [a for a in articles if a.title]
             aggregated = self.sentiment_aggregator.aggregate(
                 symbol=symbol,
                 results=scored,
+                articles=scored_articles,
                 headlines=[a.title for a in articles[:5]],
             )
             await self.cache.set(cache_key, aggregated.model_dump(), ttl)

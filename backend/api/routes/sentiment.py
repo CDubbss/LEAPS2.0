@@ -22,7 +22,7 @@ async def get_ticker_sentiment(
 ) -> TickerSentiment:
     """Fetch and score news sentiment for a single ticker."""
     sym = symbol.upper()
-    cache_key = f"sentiment:{sym}"
+    cache_key = f"sentiment_v2:{sym}"
     cached = await cache.get(cache_key)
     if cached:
         return TickerSentiment(**cached)
@@ -43,9 +43,11 @@ async def get_ticker_sentiment(
         result = _neutral_sentiment(sym)
     else:
         results = await scorer.score_texts_async(texts)
+        scored_articles = [a for a in articles if a.title]
         result = aggregator.aggregate(
             symbol=sym,
             results=results,
+            articles=scored_articles,
             headlines=[a.title for a in articles[:5]],
         )
 
@@ -68,7 +70,7 @@ async def get_batch_sentiment(
 
     async def fetch_one(symbol: str) -> tuple[str, TickerSentiment]:
         sym = symbol.upper()
-        cached = await cache.get(f"sentiment:{sym}")
+        cached = await cache.get(f"sentiment_v2:{sym}")
         if cached:
             return sym, TickerSentiment(**cached)
         articles = await news_agg.get_news(sym)
@@ -77,8 +79,9 @@ async def get_batch_sentiment(
             from backend.scanner.scanner import _neutral_sentiment
             return sym, _neutral_sentiment(sym)
         results = await scorer.score_texts_async(texts)
-        sentiment = aggregator.aggregate(sym, results, [a.title for a in articles[:5]])
-        await cache.set(f"sentiment:{sym}", sentiment.model_dump(), get_settings().CACHE_TTL_SENTIMENT)
+        scored_articles = [a for a in articles if a.title]
+        sentiment = aggregator.aggregate(sym, results, scored_articles, [a.title for a in articles[:5]])
+        await cache.set(f"sentiment_v2:{sym}", sentiment.model_dump(), get_settings().CACHE_TTL_SENTIMENT)
         return sym, sentiment
 
     tasks = [fetch_one(s) for s in symbols[:20]]  # cap at 20 symbols

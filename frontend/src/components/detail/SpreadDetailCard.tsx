@@ -153,22 +153,22 @@ const LegRow: React.FC<{ option: import("@/types").OptionQuote; label: string }>
   label,
 }) => (
   <div className="bg-gray-700/30 rounded p-3 text-xs">
-    <div className="flex justify-between mb-2">
-      <span className="font-medium text-white">
+    <div className="flex justify-between mb-2 min-w-0 gap-2">
+      <span className="font-medium text-white min-w-0 truncate">
         {label} {option.strike} {option.option_type.toUpperCase()}
       </span>
-      <span className="text-gray-300">
+      <span className="text-gray-300 whitespace-nowrap flex-shrink-0">
         Bid {formatCurrency(option.bid)} / Ask {formatCurrency(option.ask)}
       </span>
     </div>
-    <div className="grid grid-cols-4 gap-x-4 gap-y-1 text-gray-400">
-      <span>IV <InfoTooltip content={TOOLTIPS.iv_pct} />: {formatIV(option.implied_volatility)}</span>
-      <span>Δ <InfoTooltip content={TOOLTIPS.delta} />: {formatGreek(option.delta)}</span>
-      <span>Γ <InfoTooltip content={TOOLTIPS.gamma} />: {formatGreek(option.gamma, 5)}</span>
-      <span>Θ <InfoTooltip content={TOOLTIPS.theta} />: {formatGreek(option.theta)}</span>
-      <span>Vol: {option.volume.toLocaleString()}</span>
-      <span>OI: {option.open_interest.toLocaleString()}</span>
-      <span>ν <InfoTooltip content={TOOLTIPS.vega} />: {formatGreek(option.vega)}</span>
+    <div className="grid grid-cols-4 gap-x-2 gap-y-1 text-gray-400">
+      <span className="overflow-hidden truncate">IV <InfoTooltip content={TOOLTIPS.iv_pct} />: {formatIV(option.implied_volatility)}</span>
+      <span className="overflow-hidden truncate">Δ <InfoTooltip content={TOOLTIPS.delta} />: {formatGreek(option.delta)}</span>
+      <span className="overflow-hidden truncate">Γ <InfoTooltip content={TOOLTIPS.gamma} />: {formatGreek(option.gamma, 5)}</span>
+      <span className="overflow-hidden truncate">Θ <InfoTooltip content={TOOLTIPS.theta} />: {formatGreek(option.theta)}</span>
+      <span className="overflow-hidden truncate">Vol: {option.volume.toLocaleString()}</span>
+      <span className="overflow-hidden truncate">OI: {option.open_interest.toLocaleString()}</span>
+      <span className="overflow-hidden truncate">ν <InfoTooltip content={TOOLTIPS.vega} />: {formatGreek(option.vega)}</span>
     </div>
   </div>
 );

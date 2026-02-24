@@ -21,6 +21,17 @@ class SentimentResult(BaseModel):
     label: str              # "positive", "negative", "neutral"
 
 
+class ArticleSentiment(BaseModel):
+    headline: str
+    url: str = ""
+    published_at: str = ""
+    source: str = ""
+    positive: float
+    negative: float
+    neutral: float
+    label: str  # "positive" | "negative" | "neutral"
+
+
 class TickerSentiment(BaseModel):
     symbol: str
     articles_analyzed: int
@@ -32,3 +43,4 @@ class TickerSentiment(BaseModel):
     sentiment_score: float  # normalized 0-100 (50 = neutral)
     top_headlines: list[str]
     analyzed_at: str
+    article_sentiments: list[ArticleSentiment] = []
