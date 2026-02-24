@@ -48,6 +48,9 @@ class Settings(BaseSettings):
     APP_PORT: int = 8000
     LOG_LEVEL: str = "INFO"
 
+    # Review access (set to enable HTTP Basic Auth for public sharing)
+    REVIEW_PASSWORD: str = ""
+
 
 @lru_cache
 def get_settings() -> Settings:

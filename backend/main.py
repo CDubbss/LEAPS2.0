@@ -14,12 +14,17 @@ Swagger docs:
     http://localhost:8000/docs
 """
 
+import base64
 import logging
+import secrets
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 import redis.asyncio as aioredis
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.responses import Response as StarletteResponse
 
 from backend.api.cache import RedisCache
 from backend.api.routes import fundamentals, ml, options, scanner, sentiment
@@ -86,6 +91,29 @@ async def lifespan(app: FastAPI):
     logger.info("Shutdown complete")
 
 
+class BasicAuthMiddleware(BaseHTTPMiddleware):
+    """HTTP Basic Auth gate — only active when REVIEW_PASSWORD is set."""
+
+    async def dispatch(self, request, call_next):
+        if request.url.path == "/health":
+            return await call_next(request)
+        auth = request.headers.get("Authorization", "")
+        if auth.startswith("Basic "):
+            try:
+                decoded = base64.b64decode(auth[6:]).decode("utf-8")
+                _, password = decoded.split(":", 1)
+                expected = get_settings().REVIEW_PASSWORD
+                if expected and secrets.compare_digest(password, expected):
+                    return await call_next(request)
+            except Exception:
+                pass
+        return StarletteResponse(
+            "Unauthorized",
+            status_code=401,
+            headers={"WWW-Authenticate": 'Basic realm="Leaps2.0 Review"'},
+        )
+
+
 app = FastAPI(
     title="Leaps2.0 — Options Scanner & ML Tool",
     description=(
@@ -98,15 +126,14 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",  # Vite dev server
-        "http://localhost:3000",
-        "http://127.0.0.1:5173",
-    ],
-    allow_credentials=True,
+    allow_origins=["*"],
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+if get_settings().REVIEW_PASSWORD:
+    app.add_middleware(BasicAuthMiddleware)
 
 # Register API routers
 app.include_router(scanner.router, prefix="/api/v1/scanner", tags=["Scanner"])
@@ -137,3 +164,9 @@ if __name__ == "__main__":
         port=settings.APP_PORT,
         reload=True,
     )
+
+# Serve the production React build at "/" (must be last so API routes match first)
+_dist = Path(__file__).parent.parent / "frontend" / "dist"
+if _dist.exists():
+    from fastapi.staticfiles import StaticFiles
+    app.mount("/", StaticFiles(directory=str(_dist), html=True), name="static")
