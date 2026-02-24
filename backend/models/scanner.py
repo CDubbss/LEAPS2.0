@@ -11,7 +11,7 @@ from .sentiment import TickerSentiment
 class ScannerFilters(BaseModel):
     symbols: Optional[list[str]] = None          # None = use default universe
     strategies: list[SpreadType] = Field(
-        default=[SpreadType.BULL_CALL, SpreadType.BEAR_PUT]
+        default=[SpreadType.LEAP_CALL, SpreadType.LEAPS_SPREAD_CALL]
     )
     min_dte: int = 30
     max_dte: int = 90
@@ -32,6 +32,9 @@ class ScannerFilters(BaseModel):
     max_spread_width: Optional[float] = None               # hard cap in $
     max_debit_pct_of_spread: float = 1.0                   # 1.0 = no cap; 0.25 = pay ≤25% of width
     max_net_debit: Optional[float] = None                  # hard cap on net debit in $
+    # Delta filter — applied to absolute value of long leg delta
+    min_long_delta: float = 0.0                            # 0.0 = no minimum
+    max_long_delta: float = 1.0                            # 1.0 = no maximum
 
 
 class RiskScore(BaseModel):

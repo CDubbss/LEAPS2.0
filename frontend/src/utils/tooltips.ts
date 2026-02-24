@@ -5,6 +5,8 @@ export const TOOLTIPS = {
   max_cost_pct: "Max Cost %: Caps the debit paid as a % of spread width. E.g. 25% on a $10 spread = max $2.50 debit.",
   spread_width: "Spread Width: Dollar distance between the long and short strikes. Larger width = higher max profit and max loss.",
   ml_quality:   "ML Quality Score: XGBoost model confidence in spread quality (0–100). Returns a placeholder of 50 until the model is trained on historical outcomes.",
+  ml_placeholder: "Placeholder mode: scores are randomized (50 ± noise) until the model is trained. No manual inputs needed — scan data is collected automatically each time you run a scan. After ~500 spreads have been logged (roughly 1–3 months of daily scanning), run: python -m backend.ml.train from the project root. The model auto-loads on next backend restart.",
+  delta_filter: "Long Leg Delta (absolute value, 0.0–1.0): Filters by the directional exposure of the long option. Delta ≈ 0.50 is at-the-money. Delta < 0.40 is out-of-the-money (lower cost, higher risk). Delta > 0.60 is in-the-money (higher cost, higher probability). A range of 0.15–0.35 targets slightly OTM options.",
   fundamental:  "Fundamental Score (0–100): Company financial health based on P/E ratio, revenue growth, margins, and debt ratios.",
   sentiment:    "Sentiment Score (0–100): FinBERT NLP analysis of recent news articles. Higher = more positive sentiment.",
   pop_filter:   "Probability of Profit: Estimated likelihood the spread expires in-the-money, computed via Black-Scholes.",

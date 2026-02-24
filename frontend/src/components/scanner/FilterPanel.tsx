@@ -7,8 +7,6 @@ import { InfoTooltip } from "@/components/ui/Tooltip";
 import { TOOLTIPS } from "@/utils/tooltips";
 
 const STRATEGY_OPTIONS: SpreadType[] = [
-  "bull_call",
-  "bear_put",
   "leap_call",
   "leap_put",
   "leaps_spread_call",
@@ -154,6 +152,41 @@ export const FilterPanel: React.FC = () => {
             />
             <span className="text-gray-400 text-xs">days</span>
           </div>
+        </div>
+
+        {/* Long Leg Delta Range */}
+        <div>
+          <label className="block text-sm font-medium text-gray-300 mb-2">
+            Long Leg Delta <InfoTooltip content={TOOLTIPS.delta_filter} />
+          </label>
+          <div className="flex gap-2 items-center">
+            <input
+              type="number"
+              value={filters.min_long_delta}
+              onChange={(e) =>
+                setFilters({ min_long_delta: Number(e.target.value) })
+              }
+              min={0}
+              max={1}
+              step={0.01}
+              placeholder="Min"
+              className="w-20 bg-gray-800 border border-gray-600 text-white text-sm rounded px-2 py-1.5"
+            />
+            <span className="text-gray-400 text-sm">to</span>
+            <input
+              type="number"
+              value={filters.max_long_delta}
+              onChange={(e) =>
+                setFilters({ max_long_delta: Number(e.target.value) })
+              }
+              min={0}
+              max={1}
+              step={0.01}
+              placeholder="Max"
+              className="w-20 bg-gray-800 border border-gray-600 text-white text-sm rounded px-2 py-1.5"
+            />
+          </div>
+          <p className="text-xs text-gray-500 mt-1">0.00–1.00 · e.g. 0.15–0.35 for OTM</p>
         </div>
 
         {/* IV Rank Range */}

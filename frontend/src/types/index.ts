@@ -149,6 +149,8 @@ export interface ScannerFilters {
   max_spread_width: number | null;
   max_debit_pct_of_spread: number;
   max_net_debit: number | null;
+  min_long_delta: number;
+  max_long_delta: number;
 }
 
 export interface ScannerResult {
@@ -171,7 +173,7 @@ export interface OptionsChain {
 
 export const DEFAULT_FILTERS: ScannerFilters = {
   symbols: null,
-  strategies: ["bull_call", "bear_put"],
+  strategies: ["leap_call", "leaps_spread_call"],
   min_dte: 30,
   max_dte: 90,
   leaps_min_dte: 365,
@@ -190,6 +192,8 @@ export const DEFAULT_FILTERS: ScannerFilters = {
   max_spread_width: null,
   max_debit_pct_of_spread: 0.25,
   max_net_debit: null,
+  min_long_delta: 0.0,
+  max_long_delta: 1.0,
 };
 
 export const SPREAD_TYPE_LABELS: Record<SpreadType, string> = {

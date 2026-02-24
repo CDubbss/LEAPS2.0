@@ -3,6 +3,8 @@ import type { MLPrediction } from "@/types";
 import { BarChart, Bar, XAxis, Cell, Tooltip, ResponsiveContainer } from "recharts";
 import { scoreColor, scoreBackground, formatPct } from "@/utils/formatting";
 import { BrainCircuit } from "lucide-react";
+import { InfoTooltip } from "@/components/ui/Tooltip";
+import { TOOLTIPS } from "@/utils/tooltips";
 
 interface Props {
   prediction: MLPrediction;
@@ -26,8 +28,9 @@ export const MLScoreCard: React.FC<Props> = ({ prediction }) => {
         <BrainCircuit size={18} className="text-purple-400" />
         <h3 className="text-sm font-semibold text-white">ML Analysis</h3>
         {prediction.is_placeholder && (
-          <span className="px-1.5 py-0.5 bg-yellow-800 text-yellow-300 text-xs rounded">
+          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 bg-yellow-800 text-yellow-300 text-xs rounded">
             Placeholder
+            <InfoTooltip content={TOOLTIPS.ml_placeholder} />
           </span>
         )}
       </div>

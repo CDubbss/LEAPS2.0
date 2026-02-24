@@ -368,9 +368,14 @@ class OptionsScanner:
 def _apply_spread_filters(
     spreads: list[SpreadCandidate], filters: ScannerFilters
 ) -> list[SpreadCandidate]:
-    """Filter spread candidates by width and cost constraints."""
+    """Filter spread candidates by delta, width, and cost constraints."""
     out = []
     for s in spreads:
+        # Delta filter — applies to all spread types (absolute value of long leg delta)
+        long_delta = abs(s.long_leg.delta)
+        if long_delta < filters.min_long_delta or long_delta > filters.max_long_delta:
+            continue
+
         # Single-leg LEAPS have no short leg — exempt from width/cost filters
         if s.short_leg is None:
             out.append(s)
