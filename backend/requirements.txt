@@ -28,7 +28,7 @@ optuna==3.6.1
 # NLP / FinBERT
 # NOTE: Install torch FIRST with the CPU wheel before running pip install -r requirements.txt:
 #   pip install torch --index-url https://download.pytorch.org/whl/cpu
-transformers==4.44.2
+transformers==4.53.0
 tokenizers==0.19.1
 
 # Market data (free)
