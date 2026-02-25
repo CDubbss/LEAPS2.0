@@ -1,6 +1,7 @@
 from functools import lru_cache
 from pathlib import Path
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # Resolve the backend/.env regardless of where uvicorn is launched from
@@ -37,19 +38,30 @@ class Settings(BaseSettings):
 
     # Redis
     REDIS_URL: str = "redis://localhost:6379"
-    CACHE_TTL_QUOTES: int = 60
-    CACHE_TTL_FUNDAMENTALS: int = 86400
-    CACHE_TTL_CHAINS: int = 300
-    CACHE_TTL_SENTIMENT: int = 3600
-    CACHE_TTL_ML: int = 300
+    CACHE_TTL_QUOTES: int = Field(default=60, ge=1, le=86400)
+    CACHE_TTL_FUNDAMENTALS: int = Field(default=86400, ge=1, le=604800)
+    CACHE_TTL_CHAINS: int = Field(default=300, ge=1, le=86400)
+    CACHE_TTL_SENTIMENT: int = Field(default=3600, ge=1, le=86400)
+    CACHE_TTL_ML: int = Field(default=300, ge=1, le=86400)
 
     # App
     APP_HOST: str = "0.0.0.0"
     APP_PORT: int = 8000
     LOG_LEVEL: str = "INFO"
 
+    # CORS — comma-separated or JSON array in .env, e.g.:
+    # ALLOWED_ORIGINS=["http://localhost:5173","https://yourdomain.com"]
+    ALLOWED_ORIGINS: list[str] = Field(
+        default=["http://localhost:5173", "http://localhost:3000"]
+    )
+
     # Review access (set to enable HTTP Basic Auth for public sharing)
     REVIEW_PASSWORD: str = ""
+
+    # Rate limiting
+    RATE_LIMIT_SCAN: str = "5/minute"
+    RATE_LIMIT_SENTIMENT: str = "20/minute"
+    RATE_LIMIT_DEFAULT: str = "60/minute"
 
 
 @lru_cache

@@ -1,7 +1,17 @@
 services:
   redis:
     image: redis:7-alpine
+    # Bind to localhost only — prevents external network access to Redis
     ports:
-      - "6379:6379"
-    command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru
+      - "127.0.0.1:6379:6379"
+    command: >
+      redis-server
+      --maxmemory 256mb
+      --maxmemory-policy allkeys-lru
+      --bind 0.0.0.0
+      --protected-mode yes
     restart: unless-stopped
+    # Optional: to enable a Redis password, add to backend/.env:
+    #   REDIS_URL=redis://:yourpassword@localhost:6379
+    # And uncomment the line below (replace with your chosen password):
+    # command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru --requirepass yourpassword

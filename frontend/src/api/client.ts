@@ -14,9 +14,11 @@ const api = axios.create({
   timeout: 120_000, // 2 min — scans can take 30-60s
 });
 
-// Request interceptor for logging
+// Request interceptor — debug logging in development only
 api.interceptors.request.use((config) => {
-  console.debug(`[API] ${config.method?.toUpperCase()} ${config.url}`);
+  if (import.meta.env.DEV) {
+    console.debug(`[API] ${config.method?.toUpperCase()} ${config.url}`);
+  }
   return config;
 });
 
