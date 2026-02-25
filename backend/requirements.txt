@@ -1,7 +1,7 @@
 # Web framework
 fastapi==0.115.0
 uvicorn[standard]==0.30.0
-python-multipart==0.0.9
+python-multipart==0.0.22
 
 # Settings and validation
 pydantic==2.12.5
@@ -33,7 +33,7 @@ tokenizers==0.22.2
 
 # Market data (free)
 yfinance==1.2.0
-requests==2.32.3
+requests==2.32.5
 
 # Utilities
 python-dotenv==1.2.1
