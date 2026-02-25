@@ -99,7 +99,7 @@ const FundRow: React.FC<{
 
   let colorClass = "text-gray-200";
   if (colored && value) {
-    const num = parseFloat(value.replace("%", "").replace(",", ""));
+    const num = parseFloat(value.replace(/%/g, "").replace(/,/g, ""));
     colorClass = num >= 0 ? "text-green-400" : "text-red-400";
   }
 
