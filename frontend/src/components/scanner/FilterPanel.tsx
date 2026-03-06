@@ -242,6 +242,29 @@ export const FilterPanel: React.FC = () => {
             onChange={(v) => setFilters({ min_ml_quality_score: v })}
             tooltip={TOOLTIPS.ml_quality}
           />
+          <div>
+            <div className="flex justify-between text-xs mb-1">
+              <span className="text-gray-400">Min Prob. of Profit <InfoTooltip content={TOOLTIPS.pop_filter} /></span>
+              <span className="text-gray-300 font-medium">
+                {Math.round(filters.min_probability_of_profit * 100)}%
+              </span>
+            </div>
+            <input
+              type="range"
+              min={0}
+              max={80}
+              step={5}
+              value={Math.round(filters.min_probability_of_profit * 100)}
+              onChange={(e) =>
+                setFilters({ min_probability_of_profit: Number(e.target.value) / 100 })
+              }
+              className="w-full accent-sky-500"
+            />
+            <div className="flex justify-between text-xs text-gray-500 mt-1">
+              <span>0% any</span>
+              <span>80% strict</span>
+            </div>
+          </div>
         </div>
 
         {/* Liquidity */}
@@ -270,6 +293,32 @@ export const FilterPanel: React.FC = () => {
               }
               className="w-full mt-1 bg-gray-800 border border-gray-600 text-white text-sm rounded px-2 py-1.5"
             />
+          </div>
+          <div>
+            <div className="flex justify-between text-xs mb-1">
+              <span className="text-gray-400">Max Bid-Ask Spread</span>
+              <span className="text-sky-400 font-medium">
+                {Math.round(filters.max_bid_ask_spread_pct * 100)}%
+              </span>
+            </div>
+            <input
+              type="range"
+              min={5}
+              max={100}
+              step={5}
+              value={Math.round(filters.max_bid_ask_spread_pct * 100)}
+              onChange={(e) =>
+                setFilters({ max_bid_ask_spread_pct: Number(e.target.value) / 100 })
+              }
+              className="w-full accent-sky-500"
+            />
+            <div className="flex justify-between text-xs text-gray-500 mt-1">
+              <span>5% tight</span>
+              <span>100% any</span>
+            </div>
+            <p className="text-xs text-gray-500 mt-1">
+              LEAPS typically need 30–60%
+            </p>
           </div>
         </div>
 
@@ -359,17 +408,17 @@ export const FilterPanel: React.FC = () => {
           {/* Max net debit */}
           <div>
             <label className="text-xs text-gray-400 mb-1 block">
-              Max Net Debit ($)
+              Max Net Debit ($ per contract)
             </label>
             <input
               type="number"
               min={0}
-              step={0.5}
+              step={50}
               placeholder="No limit"
-              value={filters.max_net_debit ?? ""}
+              value={filters.max_net_debit !== null ? filters.max_net_debit * 100 : ""}
               onChange={(e) =>
                 setFilters({
-                  max_net_debit: e.target.value ? Number(e.target.value) : null,
+                  max_net_debit: e.target.value ? Number(e.target.value) / 100 : null,
                 })
               }
               className="w-full bg-gray-800 border border-gray-600 text-white text-sm rounded px-3 py-2 focus:outline-none focus:border-sky-500"

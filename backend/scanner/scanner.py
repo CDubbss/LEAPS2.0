@@ -17,7 +17,7 @@ from backend.data.fmp_client import FMPClient
 from backend.data.news_aggregator import NewsAggregator
 from backend.data.yfinance_client import YFinanceClient
 from backend.models.fundamentals import FundamentalData
-from backend.models.options import SpreadCandidate, SpreadType
+from backend.models.options import OptionQuote, SpreadCandidate, SpreadType
 from backend.models.scanner import RankedSpread, ScannerFilters, ScannerResult
 from backend.models.sentiment import TickerSentiment
 from backend.scanner.fundamentals_scorer import FundamentalsScorer
@@ -31,8 +31,8 @@ from backend.sentiment.sentiment_scorer import SentimentScorer
 logger = logging.getLogger(__name__)
 
 # Concurrency limits to avoid overwhelming free-tier APIs
-YFINANCE_SEMAPHORE = asyncio.Semaphore(6)   # yfinance concurrent fetches
-FMP_SEMAPHORE = asyncio.Semaphore(3)          # FMP rate limit
+YFINANCE_SEMAPHORE = asyncio.Semaphore(5)   # yfinance concurrent fetches
+FMP_SEMAPHORE = asyncio.Semaphore(1)          # FMP rate limit — free tier is 250 calls/day
 
 
 class OptionsScanner:
@@ -123,20 +123,25 @@ class OptionsScanner:
             risk_scores.append(self.risk_scorer.score(cand, fund, sent))
 
         # Stage 8: Apply ML filter + rank
+        reject_ml = reject_pop = reject_fund = reject_sent = 0
         ranked = []
         for i, (cand, ml_pred, risk) in enumerate(
             zip(all_candidates, ml_predictions, risk_scores)
         ):
             # Post-ML quality filter
             if ml_pred.spread_quality_score < filters.min_ml_quality_score:
+                reject_ml += 1
                 continue
             if cand.probability_of_profit < filters.min_probability_of_profit:
+                reject_pop += 1
                 continue
             fund = fundamentals_map.get(cand.underlying, FundamentalData(symbol=cand.underlying))
             sent = sentiment_map.get(cand.underlying, _neutral_sentiment(cand.underlying))
             if (fund.fundamental_score or 0) < filters.min_fundamental_score:
+                reject_fund += 1
                 continue
             if sent.sentiment_score < filters.min_sentiment_score:
+                reject_sent += 1
                 continue
 
             ranked.append(
@@ -156,10 +161,11 @@ class OptionsScanner:
             item.rank = i + 1
 
         logger.info(
-            "Scan %s complete: %d candidates → %d passed filters in %.1fs",
+            "Scan %s complete: %d candidates → %d passed (rejected: ml=%d pop=%d fund=%d sent=%d) in %.1fs",
             scan_id,
             len(all_candidates),
             len(ranked),
+            reject_ml, reject_pop, reject_fund, reject_sent,
             time.time() - start_time,
         )
 
@@ -180,18 +186,28 @@ class OptionsScanner:
         async def process_symbol(symbol: str) -> list[SpreadCandidate]:
             async with YFINANCE_SEMAPHORE:
                 try:
-                    quote = await self.yf.get_quote(symbol)
+                    # --- Quote (cached 60s) ---
+                    quote_key = f"quote:{symbol}"
+                    quote = await self.cache.get(quote_key)
+                    if not quote:
+                        quote = await self.yf.get_quote(symbol)
+                        await self.cache.set(quote_key, quote, self.settings.CACHE_TTL_QUOTES)
                     spot = quote["price"]
                     if spot <= 0:
                         return []
 
-                    expirations = await self.yf.get_expirations(symbol)
+                    # --- Expirations (cached 5m) ---
+                    exp_key = f"expirations:{symbol}"
+                    expirations = await self.cache.get(exp_key)
+                    if not expirations:
+                        expirations = await self.yf.get_expirations(symbol)
+                        await self.cache.set(exp_key, expirations, self.settings.CACHE_TTL_CHAINS)
                     if not expirations:
                         return []
 
                     all_spreads: list[SpreadCandidate] = []
 
-                    # Pre-filter expirations by DTE to avoid fetching useless chains
+                    # Pre-filter expirations by DTE
                     today = date.today()
                     has_spread_strategies = any(
                         s in filters.strategies
@@ -208,32 +224,45 @@ class OptionsScanner:
                             dte = (date.fromisoformat(exp) - today).days
                         except ValueError:
                             continue
+                        include = False
                         if has_spread_strategies and filters.min_dte <= dte <= filters.max_dte:
-                            valid_expiries.append(exp)
-                        elif has_leaps_strategies and filters.leaps_min_dte <= dte <= filters.leaps_max_dte:
+                            include = True
+                        if has_leaps_strategies and filters.leaps_min_dte <= dte <= filters.leaps_max_dte:
+                            include = True
+                        if include:
                             valid_expiries.append(exp)
 
-                    for expiry in valid_expiries[:8]:  # limit to 8 per symbol
+                    for expiry in valid_expiries[:5]:  # limit to 5 per symbol
                         try:
-                            calls, puts = await self.yf.get_options_chain(
-                                symbol, expiry, spot
-                            )
+                            # --- Options chain (cached 5m) ---
+                            chain_key = f"chain:{symbol}:{expiry}"
+                            cached_chain = await self.cache.get(chain_key)
+                            if cached_chain:
+                                calls = [OptionQuote.model_validate(q) for q in cached_chain["calls"]]
+                                puts  = [OptionQuote.model_validate(q) for q in cached_chain["puts"]]
+                            else:
+                                calls, puts = await self.yf.get_options_chain(symbol, expiry, spot)
+                                await self.cache.set(
+                                    chain_key,
+                                    {"calls": [q.model_dump() for q in calls],
+                                     "puts":  [q.model_dump() for q in puts]},
+                                    self.settings.CACHE_TTL_CHAINS,
+                                )
+
                             spreads = self.spread_constructor.build_all_spreads(
                                 calls=calls,
                                 puts=puts,
                                 strategies=filters.strategies,
                                 spot_price=spot,
                             )
-                            # Apply bid-ask + spread width/cost filters
                             ba_filtered = [
                                 s for s in spreads
-                                if s.bid_ask_quality_score
-                                >= (1 - filters.max_bid_ask_spread_pct)
+                                if _passes_ba_filter(s, filters.max_bid_ask_spread_pct)
                             ]
                             filtered = _apply_spread_filters(ba_filtered, filters)
                             all_spreads.extend(filtered)
                         except Exception as e:
-                            logger.debug("Chain error %s %s: %s", symbol, expiry, e)
+                            logger.warning("Chain error %s %s: %s", symbol, expiry, e)
                             continue
 
                     return all_spreads
@@ -365,6 +394,26 @@ class OptionsScanner:
         return output
 
 
+def _passes_ba_filter(spread: SpreadCandidate, max_pct: float) -> bool:
+    """
+    Direct bid-ask spread % check against each leg.
+    Replaces the quality-score gate which was miscalibrated for LEAPS.
+    A spread_pct > max_pct on any leg fails.  If bid=0 (no market), let it through
+    so the quality score displayed in the UI reflects the actual situation.
+    """
+    def leg_ok(opt) -> bool:
+        mid = (opt.bid + opt.ask) / 2
+        if mid <= 0:
+            return True  # can't compute — don't filter blind
+        return (opt.ask - opt.bid) / mid <= max_pct
+
+    if not leg_ok(spread.long_leg):
+        return False
+    if spread.short_leg and not leg_ok(spread.short_leg):
+        return False
+    return True
+
+
 def _apply_spread_filters(
     spreads: list[SpreadCandidate], filters: ScannerFilters
 ) -> list[SpreadCandidate]:
@@ -389,9 +438,11 @@ def _apply_spread_filters(
         # Max spread width hard cap
         if filters.max_spread_width is not None and w > filters.max_spread_width:
             continue
-        # Max debit as fraction of spread width (e.g. 0.25 = pay ≤25% of width)
-        if w > 0 and s.net_debit / w > filters.max_debit_pct_of_spread:
-            continue
+        # Max debit as fraction of spread width — not applicable to LEAPS spreads
+        # (LEAPS spreads structurally have high debit/width due to long time value)
+        if s.spread_type != SpreadType.LEAPS_SPREAD_CALL:
+            if w > 0 and s.net_debit / w > filters.max_debit_pct_of_spread:
+                continue
         # Max net debit absolute cap
         if filters.max_net_debit is not None and s.net_debit > filters.max_net_debit:
             continue

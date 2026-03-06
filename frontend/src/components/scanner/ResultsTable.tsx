@@ -171,10 +171,10 @@ export const ResultsTable: React.FC = () => {
         accessorFn: (r) => r.spread.net_debit,
         cell: (info) => (
           <span className="text-gray-300 text-xs font-mono">
-            {formatCurrency(info.getValue() as number)}
+            {formatCurrency((info.getValue() as number) * 100)}
           </span>
         ),
-        size: 70,
+        size: 80,
       },
       {
         id: "max_profit",
@@ -185,11 +185,11 @@ export const ResultsTable: React.FC = () => {
           const val = info.getValue() as number;
           return (
             <span className="text-green-400 text-xs font-mono">
-              {val >= 9999 ? "Unlimited" : formatCurrency(val)}
+              {val >= 9999 ? "Unlimited" : formatCurrency(val * 100)}
             </span>
           );
         },
-        size: 85,
+        size: 90,
       },
     ],
     []

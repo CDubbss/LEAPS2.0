@@ -204,13 +204,7 @@ class SpreadConstructor:
 
         for opt in options:
             dte = (opt.expiration - date.today()).days
-            if dte < 365:
-                continue
-
-            # For calls: want high delta (deep ITM); for puts: want low delta (deep ITM put)
-            delta_threshold = 0.65
-            abs_delta = abs(opt.delta)
-            if abs_delta < delta_threshold:
+            if dte < 180:  # absolute floor; DTE range is enforced by scanner pre-filter
                 continue
 
             premium = opt.ask

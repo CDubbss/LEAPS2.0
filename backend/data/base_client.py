@@ -3,9 +3,16 @@ import logging
 from abc import ABC
 
 import httpx
-from tenacity import retry, stop_after_attempt, wait_exponential
+from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 
 logger = logging.getLogger(__name__)
+
+
+def _should_retry(exc: BaseException) -> bool:
+    """Don't retry 429 — burns API quota. Retry on transient errors only."""
+    if isinstance(exc, httpx.HTTPStatusError):
+        return exc.response.status_code not in (429, 401, 403)
+    return True
 
 
 class BaseAPIClient(ABC):
@@ -38,17 +45,20 @@ class BaseAPIClient(ABC):
     async def __aexit__(self, *args):
         await self.close()
 
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=8))
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(min=1, max=8),
+        retry=retry_if_exception(_should_retry),
+    )
     async def _get(self, path: str, params: dict | None = None) -> dict:
         if self._client is None:
-            # Lazy open — supports calling without explicit context manager
             await self.open()
         try:
             response = await self._client.get(path, params=params)
             response.raise_for_status()
             return response.json()
         except httpx.HTTPStatusError as e:
-            logger.error("HTTP error %s for %s: %s", e.response.status_code, path, e)
+            logger.warning("HTTP error %s for %s: %s", e.response.status_code, path, e)
             raise
         except httpx.RequestError as e:
             logger.error("Request error for %s: %s", path, e)

@@ -33,40 +33,28 @@ class FMPClient(BaseAPIClient):
 
     async def get_full_fundamentals(self, symbol: str) -> FundamentalData:
         """
-        Fetch and aggregate fundamentals. All FMP calls run concurrently.
+        Fetch and aggregate fundamentals. Requests are sequential to avoid
+        hammering FMP rate limits (free tier: 250 calls/day).
         Falls back to empty/default values if any call fails.
         """
-        try:
-            base_params = {"symbol": symbol, "apikey": self.api_key}
+        base_params = {"symbol": symbol, "apikey": self.api_key}
 
-            profile_task = self._get("/profile", base_params)
-            metrics_task = self._get("/key-metrics", {**base_params, "limit": 1})
-            income_task = self._get("/income-statement", {**base_params, "limit": 2})
-            balance_task = self._get("/balance-sheet-statement", {**base_params, "limit": 1})
-            earnings_task = self._get("/earnings", {**base_params, "limit": 1})
+        async def _safe_get(path, extra=None):
+            try:
+                return await self._get(path, {**base_params, **(extra or {})})
+            except Exception as e:
+                logger.debug("FMP %s %s skipped: %s", path, symbol, e)
+                return []
 
-            results = await asyncio.gather(
-                profile_task,
-                metrics_task,
-                income_task,
-                balance_task,
-                earnings_task,
-                return_exceptions=True,
-            )
+        profile_data  = await _safe_get("/profile")
+        metrics_data  = await _safe_get("/key-metrics",            {"limit": 1})
+        income_data   = await _safe_get("/income-statement",       {"limit": 2})
+        balance_data  = await _safe_get("/balance-sheet-statement",{"limit": 1})
+        earnings_data = await _safe_get("/earnings",               {"limit": 1})
 
-            profile_data = results[0] if not isinstance(results[0], Exception) else []
-            metrics_data = results[1] if not isinstance(results[1], Exception) else []
-            income_data = results[2] if not isinstance(results[2], Exception) else []
-            balance_data = results[3] if not isinstance(results[3], Exception) else []
-            earnings_data = results[4] if not isinstance(results[4], Exception) else []
-
-            return self._normalize(
-                symbol, profile_data, metrics_data, income_data, balance_data, earnings_data
-            )
-
-        except Exception as e:
-            logger.warning("Failed to fetch fundamentals for %s: %s", symbol, e)
-            return FundamentalData(symbol=symbol)
+        return self._normalize(
+            symbol, profile_data, metrics_data, income_data, balance_data, earnings_data
+        )
 
     def _normalize(
         self,

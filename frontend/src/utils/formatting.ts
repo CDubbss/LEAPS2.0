@@ -67,6 +67,7 @@ export function spreadTypeLabel(type: string): string {
     bear_put: "Bear Put",
     leap_call: "LEAPS Call",
     leap_put: "LEAPS Put",
+    leaps_spread_call: "LEAPS Spread",
   };
   return labels[type] || type;
 }
@@ -77,6 +78,7 @@ export function spreadTypeBadgeColor(type: string): string {
     bear_put: "bg-rose-600 text-white",
     leap_call: "bg-blue-600 text-white",
     leap_put: "bg-purple-600 text-white",
+    leaps_spread_call: "bg-indigo-600 text-white",
   };
   return colors[type] || "bg-gray-600 text-white";
 }

@@ -21,15 +21,31 @@ from backend.scanner.greeks_calculator import compute_greeks
 logger = logging.getLogger(__name__)
 
 # Thread pool for yfinance (synchronous library, must not block async loop)
-_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="yfinance")
+_executor = ThreadPoolExecutor(max_workers=8, thread_name_prefix="yfinance")
 
 RISK_FREE_RATE = 0.05  # approximate 3-month T-bill rate
 
+_RATE_LIMIT_PHRASES = ("too many requests", "rate limit", "429", "no data found")
 
-def _run_sync(fn, *args):
-    """Run a synchronous function in the thread pool."""
+
+async def _run_sync(fn, *args, max_retries: int = 3):
+    """Run a synchronous function in the thread pool with exponential backoff retry."""
     loop = asyncio.get_event_loop()
-    return loop.run_in_executor(_executor, fn, *args)
+    for attempt in range(max_retries):
+        try:
+            return await loop.run_in_executor(_executor, fn, *args)
+        except Exception as e:
+            msg = str(e).lower()
+            is_rate_limit = any(p in msg for p in _RATE_LIMIT_PHRASES)
+            if is_rate_limit and attempt < max_retries - 1:
+                delay = 5 * (2 ** attempt)  # 5s, 10s
+                logger.warning(
+                    "yfinance rate limited, retrying in %ds (attempt %d/%d): %s",
+                    delay, attempt + 1, max_retries, e,
+                )
+                await asyncio.sleep(delay)
+                continue
+            raise
 
 
 class YFinanceClient:

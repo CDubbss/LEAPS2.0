@@ -46,9 +46,9 @@ export const SpreadDetailCard: React.FC<Props> = ({ item }) => {
         </div>
         <div className="text-right">
           <div className="text-xl font-bold text-white">
-            {formatCurrency(spread.net_debit)}
+            {formatCurrency(spread.net_debit * 100)}
           </div>
-          <div className="text-xs text-gray-400">Net Debit</div>
+          <div className="text-xs text-gray-400">Net Debit / contract</div>
         </div>
       </div>
 
@@ -62,7 +62,7 @@ export const SpreadDetailCard: React.FC<Props> = ({ item }) => {
           <div className="text-lg font-bold text-green-400">
             {spread.max_profit >= 9999
               ? "Unlimited"
-              : formatCurrency(spread.max_profit)}
+              : formatCurrency(spread.max_profit * 100)}
           </div>
         </div>
         <div className="bg-gray-700/50 rounded p-3 text-center">
@@ -71,7 +71,7 @@ export const SpreadDetailCard: React.FC<Props> = ({ item }) => {
             <span className="text-xs">Max Loss</span>
           </div>
           <div className="text-lg font-bold text-red-400">
-            {formatCurrency(spread.max_loss)}
+            {formatCurrency(spread.max_loss * 100)}
           </div>
         </div>
         <div className="bg-gray-700/50 rounded p-3 text-center">
@@ -158,7 +158,8 @@ const LegRow: React.FC<{ option: import("@/types").OptionQuote; label: string }>
         {label} {option.strike} {option.option_type.toUpperCase()}
       </span>
       <span className="text-gray-300 whitespace-nowrap flex-shrink-0">
-        Bid {formatCurrency(option.bid)} / Ask {formatCurrency(option.ask)}
+        Bid {formatCurrency(option.bid)} / Ask {formatCurrency(option.ask)}{" "}
+        <span className="text-gray-500 text-xs">per share</span>
       </span>
     </div>
     <div className="grid grid-cols-2 gap-x-2 gap-y-1 text-gray-400 lg:grid-cols-4">
