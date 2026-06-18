@@ -6,6 +6,7 @@ Greeks are NOT provided by yfinance — they are computed by greeks_calculator.p
 
 import asyncio
 import logging
+import math
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta
 from functools import lru_cache
@@ -25,20 +26,60 @@ _executor = ThreadPoolExecutor(max_workers=8, thread_name_prefix="yfinance")
 
 RISK_FREE_RATE = 0.05  # approximate 3-month T-bill rate
 
+# Per-call concurrency limit — sits inside _run_sync so cached results never
+# consume a slot. 20 concurrent is the practical ceiling before Yahoo starts
+# rate-limiting aggressively; retries are 3s/6s so failures recover quickly.
+_YFINANCE_SEMAPHORE = asyncio.Semaphore(20)
+
 _RATE_LIMIT_PHRASES = ("too many requests", "rate limit", "429", "no data found")
 
 
+def _safe_int(val, default: int = 0) -> int:
+    """Convert a value to int, returning default for None/NaN/invalid.
+    Necessary because yfinance returns float('nan') for volume/OI on thinly
+    traded options — int(nan) raises ValueError, silently dropping the row.
+    """
+    if val is None:
+        return default
+    try:
+        f = float(val)
+        return default if math.isnan(f) or math.isinf(f) else int(f)
+    except (TypeError, ValueError):
+        return default
+
+
 async def _run_sync(fn, *args, max_retries: int = 3):
-    """Run a synchronous function in the thread pool with exponential backoff retry."""
+    """
+    Run a synchronous yfinance function in the thread pool.
+
+    Key design points:
+    - Semaphore is acquired ONLY during the actual HTTP call (not during cache reads
+      or spread construction), so 587 symbols can all be "in flight" with only N
+      actually hitting Yahoo Finance at a time.
+    - asyncio.wait_for adds a hard 25s timeout per call to kill hung connections.
+    - Rate-limit sleep happens OUTSIDE the semaphore so the slot is free for others.
+    """
     loop = asyncio.get_event_loop()
     for attempt in range(max_retries):
         try:
-            return await loop.run_in_executor(_executor, fn, *args)
+            async with _YFINANCE_SEMAPHORE:
+                return await asyncio.wait_for(
+                    loop.run_in_executor(_executor, fn, *args),
+                    timeout=12.0,
+                )
+        except asyncio.TimeoutError:
+            logger.warning(
+                "yfinance call timed out after 25s (attempt %d/%d)",
+                attempt + 1, max_retries,
+            )
+            if attempt < max_retries - 1:
+                continue
+            raise
         except Exception as e:
             msg = str(e).lower()
             is_rate_limit = any(p in msg for p in _RATE_LIMIT_PHRASES)
             if is_rate_limit and attempt < max_retries - 1:
-                delay = 5 * (2 ** attempt)  # 5s, 10s
+                delay = 3 * (2 ** attempt)  # 3s, 6s — sleep OUTSIDE semaphore
                 logger.warning(
                     "yfinance rate limited, retrying in %ds (attempt %d/%d): %s",
                     delay, attempt + 1, max_retries, e,
@@ -59,14 +100,25 @@ class YFinanceClient:
 
         def _fetch():
             ticker = yf.Ticker(symbol)
-            info = ticker.fast_info
-            return {
-                "symbol": symbol,
-                "price": float(info.last_price or 0),
-                "fifty_two_week_high": float(info.year_high or 0),
-                "fifty_two_week_low": float(info.year_low or 0),
-                "previous_close": float(info.previous_close or 0),
-            }
+            try:
+                info = ticker.fast_info
+                return {
+                    "symbol": symbol,
+                    "price": float(info.last_price or 0),
+                    "fifty_two_week_high": float(info.year_high or 0),
+                    "fifty_two_week_low": float(info.year_low or 0),
+                    "previous_close": float(info.previous_close or 0),
+                }
+            except Exception:
+                # fast_info fails on some tickers (e.g. currentTradingPeriod missing)
+                info = ticker.info
+                return {
+                    "symbol": symbol,
+                    "price": float(info.get("currentPrice") or info.get("regularMarketPrice") or 0),
+                    "fifty_two_week_high": float(info.get("fiftyTwoWeekHigh") or 0),
+                    "fifty_two_week_low": float(info.get("fiftyTwoWeekLow") or 0),
+                    "previous_close": float(info.get("previousClose") or 0),
+                }
 
         return await _run_sync(_fetch)
 
@@ -120,8 +172,11 @@ class YFinanceClient:
                 bid = float(row.get("bid", 0) or 0)
                 ask = float(row.get("ask", 0) or 0)
                 mid = round((bid + ask) / 2, 4)
-                volume = int(row.get("volume", 0) or 0)
-                oi = int(row.get("openInterest", 0) or 0)
+                # Use _safe_int: yfinance returns float('nan') for volume/OI on
+                # thinly-traded options; int(nan) raises ValueError, which the
+                # outer try/except silently catches — dropping the entire row.
+                volume = _safe_int(row.get("volume"))
+                oi = _safe_int(row.get("openInterest"))
                 last = float(row.get("lastPrice", mid) or mid)
 
                 # Compute greeks via Black-Scholes
@@ -272,6 +327,54 @@ class YFinanceClient:
             return bars
 
         return await _run_sync(_fetch)
+
+    async def get_next_earnings_date(self, symbol: str) -> Optional[date]:
+        """
+        Return the next upcoming earnings date for a symbol via yfinance.
+        Tries ticker.calendar first (most reliable), falls back to
+        get_earnings_dates(). Returns None if unavailable.
+        """
+        def _fetch() -> Optional[date]:
+            import pandas as pd
+            ticker = yf.Ticker(symbol)
+            today = date.today()
+
+            # Attempt 1: calendar dict — yfinance >= 0.2
+            try:
+                cal = ticker.calendar
+                if isinstance(cal, dict):
+                    dates = cal.get("Earnings Date", [])
+                    future = [
+                        d.date() if hasattr(d, "date") else d
+                        for d in dates
+                        if (d.date() if hasattr(d, "date") else d) >= today
+                    ]
+                    if future:
+                        return min(future)
+            except Exception:
+                pass
+
+            # Attempt 2: get_earnings_dates DataFrame
+            try:
+                df = ticker.get_earnings_dates(limit=8)
+                if df is not None and not df.empty:
+                    future = [
+                        idx.date()
+                        for idx in df.index
+                        if idx.date() >= today
+                    ]
+                    if future:
+                        return min(future)
+            except Exception:
+                pass
+
+            return None
+
+        try:
+            return await _run_sync(_fetch)
+        except Exception as e:
+            logger.debug("yfinance earnings date failed for %s: %s", symbol, e)
+            return None
 
     async def get_historical_volatility(self, symbol: str, days: int = 30) -> float:
         """Compute N-day historical volatility (annualized)."""

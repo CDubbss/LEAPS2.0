@@ -10,10 +10,70 @@ import logging
 from datetime import date
 from typing import Any, Optional
 
+import yfinance as yf
+
 from backend.data.base_client import BaseAPIClient
 from backend.models.fundamentals import FundamentalData
 
 logger = logging.getLogger(__name__)
+
+
+def _fetch_yf_debt_to_equity(symbol: str) -> Optional[float]:
+    """
+    Fallback: fetch debtToEquity from yfinance ticker.info.
+    Yahoo Finance reports this as a percentage (e.g. 45.2 = 45.2%),
+    so divide by 100 to match FMP's decimal ratio format.
+    Returns None if unavailable or on any error.
+    """
+    try:
+        info = yf.Ticker(symbol).info
+        val = info.get("debtToEquity")
+        if val is None:
+            return None
+        ratio = float(val) / 100.0
+        return ratio if ratio >= 0 else None
+    except Exception as e:
+        logger.debug("yfinance debtToEquity fallback failed %s: %s", symbol, e)
+        return None
+
+
+def _fetch_yf_next_earnings_date(symbol: str) -> Optional[date]:
+    """
+    Fallback: fetch the next upcoming earnings date from yfinance.
+    Tries ticker.calendar first, then get_earnings_dates().
+    Returns None on any failure or if no future date is available.
+    """
+    today = date.today()
+    try:
+        ticker = yf.Ticker(symbol)
+
+        # Attempt 1: calendar dict (yfinance >= 0.2)
+        try:
+            cal = ticker.calendar
+            if isinstance(cal, dict):
+                for d in cal.get("Earnings Date", []):
+                    d = d.date() if hasattr(d, "date") else d
+                    if d >= today:
+                        return d
+        except Exception:
+            pass
+
+        # Attempt 2: get_earnings_dates DataFrame
+        try:
+            import pandas as pd
+            df = ticker.get_earnings_dates(limit=8)
+            if df is not None and not df.empty:
+                future = sorted(
+                    idx.date() for idx in df.index if idx.date() >= today
+                )
+                if future:
+                    return future[0]
+        except Exception:
+            pass
+
+    except Exception as e:
+        logger.debug("yfinance earnings date fallback failed %s: %s", symbol, e)
+    return None
 
 
 class FMPClient(BaseAPIClient):
@@ -28,8 +88,20 @@ class FMPClient(BaseAPIClient):
       GET /earnings              -> next earnings date
     """
 
+    _CALLS_PER_SYMBOL = 5   # profile + metrics + income + balance + earnings
+    _DAILY_BUDGET = 240     # leave 10-call buffer from the 250/day free-tier limit
+
     def __init__(self, api_key: str, base_url: str = "https://financialmodelingprep.com/stable"):
         super().__init__(base_url=base_url, api_key=api_key)
+        self._calls_today: int = 0
+        self._budget_date: Optional[date] = None
+
+    def _budget_ok(self) -> bool:
+        today = date.today()
+        if self._budget_date != today:
+            self._calls_today = 0
+            self._budget_date = today
+        return self._calls_today + self._CALLS_PER_SYMBOL <= self._DAILY_BUDGET
 
     async def get_full_fundamentals(self, symbol: str) -> FundamentalData:
         """
@@ -37,6 +109,15 @@ class FMPClient(BaseAPIClient):
         hammering FMP rate limits (free tier: 250 calls/day).
         Falls back to empty/default values if any call fails.
         """
+        if not self._budget_ok():
+            logger.warning(
+                "FMP daily budget exhausted (%d/%d calls used) — skipping %s; "
+                "fundamentals will be NaN for this symbol",
+                self._calls_today, self._DAILY_BUDGET, symbol,
+            )
+            return FundamentalData(symbol=symbol)
+
+        self._calls_today += self._CALLS_PER_SYMBOL
         base_params = {"symbol": symbol, "apikey": self.api_key}
 
         async def _safe_get(path, extra=None):
@@ -52,8 +133,27 @@ class FMPClient(BaseAPIClient):
         balance_data  = await _safe_get("/balance-sheet-statement",{"limit": 1})
         earnings_data = await _safe_get("/earnings",               {"limit": 1})
 
+        # Fallback: if FMP balance sheet unavailable (e.g. 402), fetch D/E from yfinance
+        yf_de_ratio: Optional[float] = None
+        if not balance_data:
+            yf_de_ratio = await asyncio.to_thread(_fetch_yf_debt_to_equity, symbol)
+            if yf_de_ratio is not None:
+                logger.debug("yfinance D/E fallback for %s: %.3f", symbol, yf_de_ratio)
+
+        # Fallback: if FMP /earnings unavailable (free-tier plan limit), fetch from yfinance.
+        # FMP returns a 200 with {"Error Message": "..."} on plan limits — not an exception —
+        # so check for a valid non-empty list rather than plain truthiness.
+        earnings_valid = isinstance(earnings_data, list) and len(earnings_data) > 0
+        yf_next_earnings: Optional[date] = None
+        if not earnings_valid:
+            yf_next_earnings = await asyncio.to_thread(_fetch_yf_next_earnings_date, symbol)
+            if yf_next_earnings is not None:
+                logger.debug("yfinance earnings fallback for %s: %s", symbol, yf_next_earnings)
+
         return self._normalize(
-            symbol, profile_data, metrics_data, income_data, balance_data, earnings_data
+            symbol, profile_data, metrics_data, income_data, balance_data, earnings_data,
+            yf_de_ratio=yf_de_ratio,
+            yf_next_earnings=yf_next_earnings,
         )
 
     def _normalize(
@@ -64,6 +164,8 @@ class FMPClient(BaseAPIClient):
         income_raw: Any,
         balance_raw: Any,
         earnings_raw: Any,
+        yf_de_ratio: Optional[float] = None,
+        yf_next_earnings: Optional[date] = None,
     ) -> FundamentalData:
         # FMP stable API returns lists; take first element
         profile = profile_raw[0] if isinstance(profile_raw, list) and profile_raw else {}
@@ -118,22 +220,29 @@ class FMPClient(BaseAPIClient):
             net_margin = net_income / revenue
 
         # Debt-to-equity (totalDebt / totalStockholdersEquity)
+        # Falls back to yfinance-sourced value if FMP balance sheet unavailable
         total_debt = safe_float(balance, "totalDebt")
         total_equity = safe_float(balance, "totalStockholdersEquity") or safe_float(balance, "totalEquity")
         debt_to_equity = None
         if total_debt is not None and total_equity and total_equity != 0:
             debt_to_equity = total_debt / abs(total_equity)
+        if debt_to_equity is None and yf_de_ratio is not None:
+            debt_to_equity = yf_de_ratio
 
-        # Next earnings date
+        # Next earnings date — FMP first, yfinance fallback
         next_earnings = None
         days_to_earnings = None
         earnings_date_str = earnings.get("date", "") or earnings.get("reportedDate", "")
         if earnings_date_str:
             try:
                 next_earnings = date.fromisoformat(str(earnings_date_str)[:10])
-                days_to_earnings = (next_earnings - date.today()).days
             except ValueError:
                 pass
+        if next_earnings is None and yf_next_earnings is not None:
+            next_earnings = yf_next_earnings
+        if next_earnings is not None:
+            diff = (next_earnings - date.today()).days
+            days_to_earnings = diff if diff >= 0 else None
 
         return FundamentalData(
             symbol=symbol,

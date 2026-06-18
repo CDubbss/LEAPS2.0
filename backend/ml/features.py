@@ -4,6 +4,7 @@ Builds a 23-feature FeatureVector from spread + fundamentals + sentiment data.
 """
 
 import logging
+import math
 from datetime import date
 
 from backend.models.fundamentals import FundamentalData
@@ -53,14 +54,14 @@ class FeatureEngineer:
         fundamentals: FundamentalData,
         sentiment: TickerSentiment,
         spot_price: float,
-        hv_30d: float = 0.30,  # 30-day historical volatility (default 30%)
+        hv_30d: float = 0.30,
         iv_52w_high: float = 0.60,
         iv_52w_low: float = 0.15,
-        price_52w_high: float = 0.0,
-        price_52w_low: float = 0.0,
     ) -> FeatureVector:
         long = spread.long_leg
         short = spread.short_leg
+
+        _nan = float("nan")
 
         # --- Options mechanics ---
         iv = long.implied_volatility
@@ -90,21 +91,28 @@ class FeatureEngineer:
         # --- Volatility regime ---
         iv_vs_hv = iv / hv_30d if hv_30d > 0 else 1.0
 
+        # --- IV skew (from spread candidate, computed during chain processing) ---
+        iv_skew_val = spread.iv_skew if spread.iv_skew != 0.0 else _nan
+
         # --- Fundamental features ---
-        pe = fundamentals.pe_ratio or 25.0
-        pe = min(pe, 100.0)  # cap extreme PE for normalization
-        rev_growth = fundamentals.revenue_growth_yoy or 0.0
-        debt_eq = fundamentals.debt_to_equity or 0.5
-        gross_margin = fundamentals.gross_margin or 0.30
-        fund_score = fundamentals.fundamental_score or 50.0
+        # Use NaN for missing values so XGBoost learns the optimal split direction
+        # for missing data rather than treating "no FMP data" as a specific value.
+        pe_raw = fundamentals.pe_ratio
+        pe = min(float(pe_raw), 100.0) if pe_raw is not None else _nan
+        rev_growth = float(fundamentals.revenue_growth_yoy) if fundamentals.revenue_growth_yoy is not None else _nan
+        debt_eq = float(fundamentals.debt_to_equity) if fundamentals.debt_to_equity is not None else _nan
+        gross_margin = float(fundamentals.gross_margin) if fundamentals.gross_margin is not None else _nan
+        fund_score = float(fundamentals.fundamental_score) if fundamentals.fundamental_score is not None else _nan
 
         # --- Sentiment ---
         sent_score = sentiment.sentiment_score
         sent_compound = sentiment.avg_compound
 
-        # --- Technical context ---
-        p52h = (spot_price - price_52w_high) / price_52w_high if price_52w_high > 0 else 0.0
-        p52l = (spot_price - price_52w_low) / price_52w_low if price_52w_low > 0 else 0.0
+        # --- Technical context (52w high/low from spread candidate via yfinance quote) ---
+        p52h_val = spread.price_52w_high
+        p52l_val = spread.price_52w_low
+        p52h = (spot_price - p52h_val) / p52h_val if p52h_val > 0 else _nan
+        p52l = (spot_price - p52l_val) / p52l_val if p52l_val > 0 else _nan
 
         return FeatureVector(
             # Options
@@ -122,20 +130,20 @@ class FeatureEngineer:
             net_debit_pct_of_spread=float(net_debit_pct),
             # Volatility
             iv_vs_hv_ratio=float(iv_vs_hv),
-            iv_skew=0.0,  # placeholder — requires additional data
+            iv_skew=iv_skew_val,
             # Fundamentals
-            pe_ratio=float(pe),
-            revenue_growth=float(rev_growth),
-            debt_to_equity=float(debt_eq),
-            gross_margin=float(gross_margin),
-            fundamental_score=float(fund_score),
+            pe_ratio=pe,
+            revenue_growth=rev_growth,
+            debt_to_equity=debt_eq,
+            gross_margin=gross_margin,
+            fundamental_score=fund_score,
             # Sentiment
             sentiment_score=float(sent_score),
             sentiment_compound=float(sent_compound),
             # Technical
-            price_vs_52w_high_pct=float(p52h),
-            price_vs_52w_low_pct=float(p52l),
-            sector_relative_strength=0.5,  # placeholder
+            price_vs_52w_high_pct=p52h,
+            price_vs_52w_low_pct=p52l,
+            sector_relative_strength=float("nan"),  # no data source — XGBoost treats as missing
         )
 
     def to_numpy(self, fv: FeatureVector):

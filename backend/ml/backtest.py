@@ -82,22 +82,40 @@ def run_backtest(db_path: str, start_date: str, end_date: str) -> BacktestResult
             summary="No labeled data available for this period.",
         )
 
+    # Single-leg LEAPS have theoretically uncapped max_profit, so their stored
+    # max_profit values are unrealistically large. Cap the reward multiple used
+    # in PnL conversion to 10x the debit paid — a conservative but realistic
+    # ceiling for a strong LEAPS call move over the holding period.
+    _LEAPS_SINGLE_LEG = {"leap_call", "leap_put"}
+    _LEAPS_RR_CAP = 10.0
+
     trades = []
     for row in rows:
         features = json.loads(row[4])
+        spread_type = row[1]
+        net_debit = features.get("net_debit", 1.0)
+        max_loss   = features.get("max_loss",  net_debit)
+
+        if spread_type in _LEAPS_SINGLE_LEG:
+            # Cap the reward multiple at _LEAPS_RR_CAP so one outlier
+            # doesn't distort the average win calculation.
+            max_profit = min(features.get("max_profit", net_debit), net_debit * _LEAPS_RR_CAP)
+        else:
+            max_profit = features.get("max_profit", net_debit)
+
         trade = BacktestTrade(
             symbol=row[0],
-            spread_type=row[1],
+            spread_type=spread_type,
             expiration=row[2],
             entry_date=row[3],
-            net_debit=features.get("net_debit", 1.0),
-            max_profit=features.get("max_profit", 1.0),
-            max_loss=features.get("max_loss", 1.0),
+            net_debit=net_debit,
+            max_profit=max_profit,
+            max_loss=max_loss,
             ml_score=features.get("ml_score", 50.0),
             outcome_score=float(row[5]),
         )
         # Convert outcome_score (0-100) to PnL %
-        # 100 → max profit, 50 → breakeven, 0 → max loss
+        # 100 → max profit achieved, 50 → breakeven, 0 → max loss
         if trade.outcome_score >= 50:
             pnl_ratio = (trade.outcome_score - 50) / 50 * (trade.max_profit / max(trade.net_debit, 0.01))
         else:
@@ -127,12 +145,22 @@ def run_backtest(db_path: str, start_date: str, end_date: str) -> BacktestResult
         max_dd = max(max_dd, dd)
 
     # ML score vs PnL correlation
+    # Guard against NaN: if all ml_scores are identical (e.g. missing from DB)
+    # np.corrcoef divides by zero stddev and returns NaN.
     ml_scores = [t.ml_score for t in trades]
     pnls = [t.pnl_pct or 0 for t in trades]
     correlation = 0.0
     if len(trades) > 2:
         import numpy as np
-        correlation = float(np.corrcoef(ml_scores, pnls)[0, 1])
+        if len(set(ml_scores)) > 1:  # need variance to compute correlation
+            result = np.corrcoef(ml_scores, pnls)[0, 1]
+            correlation = float(result) if not np.isnan(result) else 0.0
+        else:
+            logger.warning(
+                "ML correlation skipped — all %d ml_scores are identical (%.1f). "
+                "ml_score was not stored at scan time for these rows.",
+                len(ml_scores), ml_scores[0],
+            )
 
     return BacktestResult(
         start_date=start_date,

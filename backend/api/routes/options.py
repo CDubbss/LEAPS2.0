@@ -88,7 +88,7 @@ async def get_options_chain(
         return OptionsChain(**cached)
 
     chain = await yf.get_full_chain(sym, exp)
-    await cache.set(cache_key, chain.model_dump(), ttl=get_settings().CACHE_TTL_CHAINS)
+    await cache.set(cache_key, chain.model_dump(mode="json"), ttl=get_settings().CACHE_TTL_CHAINS)
     return chain
 
 

@@ -19,10 +19,12 @@ class ScannerFilters(BaseModel):
     )
     min_dte: int = Field(default=30, ge=1, le=1825)
     max_dte: int = Field(default=90, ge=1, le=1825)
-    leaps_min_dte: int = Field(default=250, ge=30, le=1825)
-    leaps_max_dte: int = Field(default=730, ge=30, le=1825)
+    leaps_min_dte: int = Field(default=250, ge=1, le=1825)
+    leaps_max_dte: int = Field(default=730, ge=1, le=1825)
     min_iv_rank: float = Field(default=10.0, ge=0.0, le=100.0)
     max_iv_rank: float = Field(default=70.0, ge=0.0, le=100.0)
+    min_iv: float = Field(default=0.0, ge=0.0, le=5.0, description="Min long leg IV (absolute, e.g. 0.15 = 15%)")
+    max_iv: float = Field(default=1.0, ge=0.0, le=5.0, description="Max long leg IV (absolute, e.g. 0.60 = 60%)")
     min_volume: int = Field(default=100, ge=0, le=10_000_000)
     min_open_interest: int = Field(default=500, ge=0, le=10_000_000)
     max_bid_ask_spread_pct: float = Field(default=0.50, ge=0.0, le=1.0)
@@ -30,7 +32,8 @@ class ScannerFilters(BaseModel):
     min_sentiment_score: float = Field(default=0.0, ge=0.0, le=100.0)
     min_probability_of_profit: float = Field(default=0.0, ge=0.0, le=1.0)
     min_ml_quality_score: float = Field(default=0.0, ge=0.0, le=100.0)
-    max_results: int = Field(default=50, ge=1, le=200)
+    max_results: int = Field(default=100, ge=1, le=500)
+    max_results_per_symbol: int = Field(default=3, ge=1, le=20)
     # Spread width / cost controls (two-leg spreads only; single-leg LEAPS are exempt)
     target_spread_widths: list[float] = Field(default=[], max_length=20)
     max_spread_width: Optional[float] = Field(default=None, ge=0.0, le=100_000.0)
@@ -39,6 +42,12 @@ class ScannerFilters(BaseModel):
     # Delta filter — applied to absolute value of long leg delta
     min_long_delta: float = Field(default=0.0, ge=0.0, le=1.0)
     max_long_delta: float = Field(default=1.0, ge=0.0, le=1.0)
+    # Universe filter — named index groups to scan. Empty = full universe.
+    index_groups: list[str] = Field(default=[], description="Index groups: nasdaq_100, nasdaq_extended, sp500, msci, etfs")
+    # Earnings play — single-leg call/put targeting near-term earnings catalyst
+    earnings_play: bool = Field(default=False, description="Only return earnings_call/earnings_put candidates")
+    earnings_min_days: int = Field(default=15, ge=1, le=365, description="Minimum days until earnings")
+    earnings_max_days: int = Field(default=50, ge=1, le=365, description="Maximum days until earnings")
 
 
 class RiskScore(BaseModel):

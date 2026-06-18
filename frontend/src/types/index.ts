@@ -1,7 +1,7 @@
 // TypeScript interfaces mirroring the backend Pydantic models
 
 export type OptionType = "call" | "put";
-export type SpreadType = "bull_call" | "bear_put" | "leap_call" | "leap_put" | "leaps_spread_call";
+export type SpreadType = "bull_call" | "bear_put" | "leap_call" | "leap_put" | "leaps_spread_call" | "earnings_call" | "earnings_put";
 
 export interface OptionQuote {
   symbol: string;
@@ -38,6 +38,8 @@ export interface SpreadCandidate {
   bid_ask_quality_score: number;
   iv_rank: number;
   spread_width: number;
+  days_to_earnings: number | null;
+  next_earnings_date: string | null;
 }
 
 export interface FundamentalData {
@@ -137,6 +139,8 @@ export interface ScannerFilters {
   leaps_max_dte: number;
   min_iv_rank: number;
   max_iv_rank: number;
+  min_iv: number;
+  max_iv: number;
   min_volume: number;
   min_open_interest: number;
   max_bid_ask_spread_pct: number;
@@ -145,12 +149,24 @@ export interface ScannerFilters {
   min_probability_of_profit: number;
   min_ml_quality_score: number;
   max_results: number;
+  max_results_per_symbol: number;
   target_spread_widths: number[];
   max_spread_width: number | null;
   max_debit_pct_of_spread: number;
   max_net_debit: number | null;
   min_long_delta: number;
   max_long_delta: number;
+  index_groups: string[];
+  earnings_play: boolean;
+  earnings_min_days: number;
+  earnings_max_days: number;
+}
+
+export interface ScanJob {
+  scan_id: string;
+  status: "running" | "complete" | "failed";
+  result?: ScannerResult;
+  error?: string;
 }
 
 export interface ScannerResult {
@@ -176,10 +192,12 @@ export const DEFAULT_FILTERS: ScannerFilters = {
   strategies: ["leap_call", "leaps_spread_call"],
   min_dte: 30,
   max_dte: 90,
-  leaps_min_dte: 250,
+  leaps_min_dte: 365,
   leaps_max_dte: 730,
   min_iv_rank: 10,
   max_iv_rank: 70,
+  min_iv: 0.0,
+  max_iv: 1.0,
   min_volume: 100,
   min_open_interest: 500,
   max_bid_ask_spread_pct: 0.50,
@@ -187,13 +205,18 @@ export const DEFAULT_FILTERS: ScannerFilters = {
   min_sentiment_score: 0,
   min_probability_of_profit: 0.0,
   min_ml_quality_score: 0,
-  max_results: 50,
+  max_results: 100,
+  max_results_per_symbol: 3,
   target_spread_widths: [],
   max_spread_width: null,
-  max_debit_pct_of_spread: 0.25,
+  max_debit_pct_of_spread: 0.80,
   max_net_debit: null,
   min_long_delta: 0.0,
   max_long_delta: 1.0,
+  index_groups: ["nasdaq_100"],
+  earnings_play: false,
+  earnings_min_days: 15,
+  earnings_max_days: 50,
 };
 
 export const SPREAD_TYPE_LABELS: Record<SpreadType, string> = {
@@ -202,4 +225,6 @@ export const SPREAD_TYPE_LABELS: Record<SpreadType, string> = {
   leap_call: "LEAPS Call",
   leap_put: "LEAPS Put",
   leaps_spread_call: "LEAPS Spread Call",
+  earnings_call: "Earnings Call",
+  earnings_put: "Earnings Put",
 };

@@ -9,7 +9,7 @@ services:
       --maxmemory 256mb
       --maxmemory-policy allkeys-lru
       --bind 0.0.0.0
-      --protected-mode yes
+      --protected-mode no
     restart: unless-stopped
     # Optional: to enable a Redis password, add to backend/.env:
     #   REDIS_URL=redis://:yourpassword@localhost:6379

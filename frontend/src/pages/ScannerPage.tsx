@@ -48,7 +48,7 @@ export const ScannerPage: React.FC = () => {
         )}
       </div>
 
-      {/* Mobile filter drawer */}
+      {/* Mobile filter drawer (hidden on desktop) */}
       {filterOpen && (
         <div className="lg:hidden fixed inset-0 z-40">
           <div className="absolute inset-0 bg-black/60" onClick={() => setFilterOpen(false)} />

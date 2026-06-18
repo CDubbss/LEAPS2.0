@@ -10,6 +10,16 @@ const STRATEGY_OPTIONS: SpreadType[] = [
   "leap_call",
   "leap_put",
   "leaps_spread_call",
+  "earnings_call",
+  "earnings_put",
+];
+
+const INDEX_GROUPS: { key: string; label: string }[] = [
+  { key: "nasdaq_100", label: "Nasdaq 100" },
+  { key: "nasdaq_extended", label: "Nasdaq Ext." },
+  { key: "sp500", label: "S&P 500" },
+  { key: "msci", label: "MSCI / Intl" },
+  { key: "etfs", label: "ETFs" },
 ];
 
 const PRESET_WIDTHS = [5, 10, 15, 20];
@@ -54,6 +64,46 @@ export const FilterPanel: React.FC = () => {
       </div>
 
       <div className="flex-1 p-4 space-y-6">
+        {/* Universe / Index Groups */}
+        <div>
+          <label className="block text-sm font-medium text-gray-300 mb-2">
+            Universe{" "}
+            <span className="text-gray-500 font-normal">(empty = all)</span>
+          </label>
+          <div className="flex flex-wrap gap-1.5">
+            {INDEX_GROUPS.map(({ key, label }) => {
+              const active = (filters.index_groups ?? []).includes(key);
+              return (
+                <button
+                  key={key}
+                  onClick={() => {
+                    const groups = filters.index_groups ?? [];
+                    setFilters({
+                      index_groups: active
+                        ? groups.filter((g) => g !== key)
+                        : [...groups, key],
+                    });
+                  }}
+                  className={`px-2.5 py-1 rounded text-xs font-medium border transition-colors ${
+                    active
+                      ? "bg-sky-600 border-sky-500 text-white"
+                      : "bg-gray-800 border-gray-600 text-gray-300 hover:border-gray-400"
+                  }`}
+                >
+                  {label}
+                </button>
+              );
+            })}
+          </div>
+          <p className="text-xs text-gray-500 mt-1.5">
+            {(filters.index_groups ?? []).length === 0
+              ? "⚠ All 587 symbols — expect 10+ min"
+              : (filters.index_groups ?? []).length === 1 && filters.index_groups[0] === "nasdaq_100"
+              ? "~86 symbols · ~2 min cold · ~30s warm"
+              : `${filters.index_groups.length} group${filters.index_groups.length > 1 ? "s" : ""} selected`}
+          </p>
+        </div>
+
         {/* Symbol Input */}
         <div>
           <label className="block text-sm font-medium text-gray-300 mb-2">
@@ -123,35 +173,85 @@ export const FilterPanel: React.FC = () => {
           </div>
         </div>
 
+        {/* Earnings Filter */}
+        <div>
+          <div className="flex items-center justify-between mb-2">
+            <label className="text-sm font-medium text-gray-300">
+              Earnings Play
+            </label>
+            <button
+              onClick={() => setFilters({ earnings_play: !filters.earnings_play })}
+              className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${
+                filters.earnings_play ? "bg-amber-600" : "bg-gray-600"
+              }`}
+            >
+              <span
+                className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform ${
+                  filters.earnings_play ? "translate-x-4.5" : "translate-x-0.5"
+                }`}
+              />
+            </button>
+          </div>
+          {filters.earnings_play && (
+            <div className="space-y-2 mt-2">
+              <p className="text-xs text-gray-500">
+                Only show candidates where earnings is within this window
+              </p>
+              <div className="flex gap-2 items-center">
+                <input
+                  type="number"
+                  value={filters.earnings_min_days}
+                  onChange={(e) =>
+                    setFilters({ earnings_min_days: Number(e.target.value) })
+                  }
+                  min={1}
+                  max={365}
+                  className="w-20 bg-gray-800 border border-gray-600 text-white text-sm rounded px-2 py-1.5"
+                />
+                <span className="text-gray-400 text-sm">to</span>
+                <input
+                  type="number"
+                  value={filters.earnings_max_days}
+                  onChange={(e) =>
+                    setFilters({ earnings_max_days: Number(e.target.value) })
+                  }
+                  min={1}
+                  max={365}
+                  className="w-20 bg-gray-800 border border-gray-600 text-white text-sm rounded px-2 py-1.5"
+                />
+                <span className="text-gray-400 text-xs">days</span>
+              </div>
+              <p className="text-xs text-gray-500">Default: 15–50 days</p>
+            </div>
+          )}
+        </div>
+
         {/* DTE Range */}
         <div>
           <label className="block text-sm font-medium text-gray-300 mb-2">
-            DTE Range (Spreads) <InfoTooltip content={TOOLTIPS.dte} />
+            DTE Range <InfoTooltip content={TOOLTIPS.dte} />
           </label>
           <div className="flex gap-2 items-center">
             <input
               type="number"
-              value={filters.min_dte}
-              onChange={(e) =>
-                setFilters({ min_dte: Number(e.target.value) })
-              }
-              min={0}
-              max={365}
+              value={filters.leaps_min_dte}
+              onChange={(e) => setFilters({ leaps_min_dte: Number(e.target.value) })}
+              min={1}
+              max={1825}
               className="w-20 bg-gray-800 border border-gray-600 text-white text-sm rounded px-2 py-1.5"
             />
             <span className="text-gray-400 text-sm">to</span>
             <input
               type="number"
-              value={filters.max_dte}
-              onChange={(e) =>
-                setFilters({ max_dte: Number(e.target.value) })
-              }
-              min={0}
-              max={365}
+              value={filters.leaps_max_dte}
+              onChange={(e) => setFilters({ leaps_max_dte: Number(e.target.value) })}
+              min={1}
+              max={1825}
               className="w-20 bg-gray-800 border border-gray-600 text-white text-sm rounded px-2 py-1.5"
             />
             <span className="text-gray-400 text-xs">days</span>
           </div>
+          <p className="text-xs text-gray-500 mt-1">Default: 250–730 days · min 1 day</p>
         </div>
 
         {/* Long Leg Delta Range */}
@@ -217,6 +317,42 @@ export const FilterPanel: React.FC = () => {
               className="w-20 bg-gray-800 border border-gray-600 text-white text-sm rounded px-2 py-1.5"
             />
           </div>
+        </div>
+
+        {/* Current IV Range */}
+        <div>
+          <label className="block text-sm font-medium text-gray-300 mb-2">
+            Current IV Range
+          </label>
+          <div className="flex gap-2 items-center">
+            <input
+              type="number"
+              value={Math.round(filters.min_iv * 100)}
+              onChange={(e) =>
+                setFilters({ min_iv: Number(e.target.value) / 100 })
+              }
+              min={0}
+              max={500}
+              step={5}
+              className="w-20 bg-gray-800 border border-gray-600 text-white text-sm rounded px-2 py-1.5"
+            />
+            <span className="text-gray-400 text-sm">to</span>
+            <input
+              type="number"
+              value={Math.round(filters.max_iv * 100)}
+              onChange={(e) =>
+                setFilters({ max_iv: Number(e.target.value) / 100 })
+              }
+              min={0}
+              max={500}
+              step={5}
+              className="w-20 bg-gray-800 border border-gray-600 text-white text-sm rounded px-2 py-1.5"
+            />
+            <span className="text-gray-400 text-xs">%</span>
+          </div>
+          <p className="text-xs text-gray-500 mt-1">
+            Long leg IV · LEAPS typically 20–60% · 0–100% = any
+          </p>
         </div>
 
         {/* Minimum Scores */}
@@ -389,7 +525,7 @@ export const FilterPanel: React.FC = () => {
             <input
               type="range"
               min={5}
-              max={50}
+              max={100}
               step={5}
               value={Math.round(filters.max_debit_pct_of_spread * 100)}
               onChange={(e) =>
@@ -401,8 +537,9 @@ export const FilterPanel: React.FC = () => {
             />
             <div className="flex justify-between text-xs text-gray-500 mt-1">
               <span>5%</span>
-              <span>50%</span>
+              <span>100% any</span>
             </div>
+            <p className="text-xs text-gray-500 mt-1">LEAPS spreads typically 40–80%</p>
           </div>
 
           {/* Max net debit */}
@@ -427,20 +564,39 @@ export const FilterPanel: React.FC = () => {
         </div>
 
         {/* Max Results */}
-        <div>
-          <label className="block text-sm font-medium text-gray-300 mb-1">
-            Max Results
+        <div className="space-y-3">
+          <label className="block text-sm font-medium text-gray-300">
+            Results
           </label>
-          <input
-            type="number"
-            value={filters.max_results}
-            onChange={(e) =>
-              setFilters({ max_results: Number(e.target.value) })
-            }
-            min={1}
-            max={200}
-            className="w-24 bg-gray-800 border border-gray-600 text-white text-sm rounded px-2 py-1.5"
-          />
+          <div className="flex gap-4">
+            <div>
+              <label className="text-xs text-gray-400 mb-1 block">Max Total</label>
+              <input
+                type="number"
+                value={filters.max_results}
+                onChange={(e) =>
+                  setFilters({ max_results: Number(e.target.value) })
+                }
+                min={1}
+                max={500}
+                className="w-24 bg-gray-800 border border-gray-600 text-white text-sm rounded px-2 py-1.5"
+              />
+            </div>
+            <div>
+              <label className="text-xs text-gray-400 mb-1 block">Per Symbol</label>
+              <input
+                type="number"
+                value={filters.max_results_per_symbol}
+                onChange={(e) =>
+                  setFilters({ max_results_per_symbol: Number(e.target.value) })
+                }
+                min={1}
+                max={20}
+                className="w-24 bg-gray-800 border border-gray-600 text-white text-sm rounded px-2 py-1.5"
+              />
+            </div>
+          </div>
+          <p className="text-xs text-gray-500">Per Symbol caps results per ticker for diversity</p>
         </div>
       </div>
 

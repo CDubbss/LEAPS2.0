@@ -1,0 +1,16 @@
+{
+  "strategies": ["leap_call", "leaps_spread_call"],
+  "leaps_min_dte": 365,
+  "leaps_max_dte": 730,
+  "min_iv_rank": 10,
+  "max_iv_rank": 70,
+  "min_volume": 100,
+  "min_open_interest": 500,
+  "max_bid_ask_spread_pct": 0.50,
+  "max_debit_pct_of_spread": 0.80,
+  "min_long_delta": 0.0,
+  "max_long_delta": 1.0,
+  "max_results": 100,
+  "max_results_per_symbol": 3,
+  "index_groups": ["nasdaq_100", "sp500"]
+}

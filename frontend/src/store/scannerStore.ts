@@ -3,6 +3,8 @@ import { scannerApi } from "@/api/client";
 import type { RankedSpread, ScannerFilters, ScannerResult } from "@/types";
 import { DEFAULT_FILTERS } from "@/types";
 
+const POLL_INTERVAL_MS = 3000;
+
 interface ScannerStore {
   filters: ScannerFilters;
   result: ScannerResult | null;
@@ -34,11 +36,31 @@ export const useScannerStore = create<ScannerStore>((set, get) => ({
   runScan: async () => {
     set({ isLoading: true, error: null, selectedSpread: null });
     try {
-      const result = await scannerApi.runScan(get().filters);
-      set({
-        result,
-        isLoading: false,
-        lastScanDuration: result.scan_duration_seconds,
+      // Start the scan — returns immediately with a scan_id
+      const job = await scannerApi.startScan(get().filters);
+
+      // Poll until complete or failed
+      await new Promise<void>((resolve, reject) => {
+        const poll = async () => {
+          try {
+            const status = await scannerApi.getScanStatus(job.scan_id);
+            if (status.status === "complete" && status.result) {
+              set({
+                result: status.result,
+                isLoading: false,
+                lastScanDuration: status.result.scan_duration_seconds,
+              });
+              resolve();
+            } else if (status.status === "failed") {
+              reject(new Error(status.error || "Scan failed"));
+            } else {
+              setTimeout(poll, POLL_INTERVAL_MS);
+            }
+          } catch (err) {
+            reject(err);
+          }
+        };
+        setTimeout(poll, POLL_INTERVAL_MS);
       });
     } catch (err) {
       set({

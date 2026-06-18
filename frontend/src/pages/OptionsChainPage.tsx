@@ -1,4 +1,21 @@
-import React, { useState } from "react";
+/**
+ * OptionsChainPage — options chain viewer.
+ *
+ * Mobile layout:
+ *   • Symbol search bar full-width with a compact "Load" button.
+ *   • Expiration pills scroll horizontally.
+ *   • Chain table: sticky strike column so it's always visible while scrolling.
+ *   • ATM row highlighted and auto-scrolled into view on load.
+ *   • pb-16 clears the BottomTabBar.
+ *
+ * Desktop layout: same, but with more horizontal space so scrolling is minimal.
+ *
+ * To restyle:
+ *   • Column colors: change headerCls / cellCls strings in OptionsChainTable.
+ *   • ATM highlight: change the bg-sky-900/20 class on the ATM row.
+ *   • Input/button: change className strings in the search bar.
+ */
+import React, { useState, useRef, useEffect } from "react";
 import { optionsApi } from "@/api/client";
 import type { OptionsChain, OptionQuote } from "@/types";
 import {
@@ -10,13 +27,13 @@ import {
 import { Search, Loader2 } from "lucide-react";
 
 export const OptionsChainPage: React.FC = () => {
-  const [symbol, setSymbol] = useState("");
-  const [inputValue, setInputValue] = useState("");
+  const [symbol, setSymbol]           = useState("");
+  const [inputValue, setInputValue]   = useState("");
   const [expirations, setExpirations] = useState<string[]>([]);
   const [selectedExp, setSelectedExp] = useState<string>("");
-  const [chain, setChain] = useState<OptionsChain | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [chain, setChain]             = useState<OptionsChain | null>(null);
+  const [loading, setLoading]         = useState(false);
+  const [error, setError]             = useState<string | null>(null);
 
   const loadSymbol = async () => {
     const sym = inputValue.toUpperCase().trim();
@@ -55,38 +72,41 @@ export const OptionsChainPage: React.FC = () => {
   };
 
   return (
-    <div className="flex flex-col h-full overflow-hidden p-4 space-y-4">
-      {/* Search */}
-      <div className="flex gap-3 items-center">
-        <h1 className="text-xl font-bold text-white">Options Chain</h1>
-        <div className="flex gap-2 ml-auto">
+    <div className="flex flex-col h-full min-h-0">
+
+      {/* ── Search bar — fixed ────────────────────────────────────────── */}
+      <div className="flex items-center gap-2 px-3 py-2.5 bg-gray-900 border-b border-gray-700 flex-shrink-0">
+        <span className="hidden sm:block text-sm font-semibold text-white shrink-0">
+          Options Chain
+        </span>
+        <div className="flex gap-2 flex-1 sm:ml-auto sm:flex-initial">
           <input
             type="text"
             value={inputValue}
             onChange={(e) => setInputValue(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && loadSymbol()}
-            placeholder="Enter symbol (e.g. AAPL)"
-            className="bg-gray-800 border border-gray-600 text-white text-sm rounded-lg px-3 py-2 w-48 focus:outline-none focus:border-sky-500"
+            placeholder="Symbol (e.g. AAPL)"
+            className="flex-1 sm:w-44 bg-gray-800 border border-gray-600 text-white text-sm rounded-lg px-3 py-2 focus:outline-none focus:border-sky-500"
           />
           <button
             onClick={loadSymbol}
             disabled={loading}
-            className="flex items-center gap-2 px-4 py-2 bg-sky-600 hover:bg-sky-500 text-white text-sm rounded-lg font-medium"
+            className="flex items-center gap-1.5 px-3 py-2 bg-sky-600 hover:bg-sky-500 disabled:bg-gray-700 text-white text-sm rounded-lg font-medium transition-colors shrink-0"
           >
-            <Search size={16} />
-            Load
+            <Search size={15} />
+            <span className="hidden sm:inline">Load</span>
           </button>
         </div>
       </div>
 
-      {/* Expiration tabs */}
+      {/* ── Expiration pills — fixed ──────────────────────────────────── */}
       {expirations.length > 0 && (
-        <div className="flex gap-1 overflow-x-auto pb-1">
-          {expirations.slice(0, 12).map((exp) => (
+        <div className="flex gap-1 overflow-x-auto px-3 py-2 bg-gray-900 border-b border-gray-700 flex-shrink-0">
+          {expirations.slice(0, 16).map((exp) => (
             <button
               key={exp}
               onClick={() => loadExpiration(exp)}
-              className={`px-3 py-1.5 text-xs font-medium rounded whitespace-nowrap transition-colors ${
+              className={`px-2.5 py-1 text-xs font-medium rounded whitespace-nowrap transition-colors shrink-0 ${
                 selectedExp === exp
                   ? "bg-sky-600 text-white"
                   : "bg-gray-700 text-gray-300 hover:bg-gray-600"
@@ -98,40 +118,57 @@ export const OptionsChainPage: React.FC = () => {
         </div>
       )}
 
-      {/* Loading / Error */}
-      {loading && (
-        <div className="flex-1 flex items-center justify-center">
-          <Loader2 size={32} className="text-sky-500 animate-spin" />
-        </div>
-      )}
-      {error && (
-        <div className="text-red-400 text-sm bg-red-900/20 border border-red-700 rounded p-3">
-          {error}
-        </div>
-      )}
-
-      {/* Chain table */}
+      {/* ── Spot price bar — fixed (only when chain loaded) ───────────── */}
       {!loading && chain && (
-        <div className="flex-1 overflow-auto">
-          <div className="flex items-center gap-4 mb-3 text-sm text-gray-400">
-            <span className="text-white font-bold text-lg">{chain.underlying}</span>
-            <span>Spot: <span className="text-white">${chain.spot_price.toFixed(2)}</span></span>
-            <span>{chain.calls.length} calls · {chain.puts.length} puts</span>
-          </div>
-          <OptionsChainTable chain={chain} />
+        <div className="flex items-center gap-3 px-3 py-1.5 bg-gray-900/80 border-b border-gray-800 flex-shrink-0 text-xs text-gray-400">
+          <span className="text-white font-bold text-sm">{chain.underlying}</span>
+          <span>
+            Spot:{" "}
+            <span className="text-sky-300 font-mono">
+              ${chain.spot_price.toFixed(2)}
+            </span>
+          </span>
+          <span className="ml-auto text-gray-600">
+            {chain.calls.length}C · {chain.puts.length}P
+          </span>
         </div>
       )}
 
-      {!loading && !chain && !error && (
-        <div className="flex-1 flex items-center justify-center text-gray-500">
-          Enter a symbol above to view its options chain
-        </div>
-      )}
+      {/* ── Scrollable body — fills remaining height ──────────────────── */}
+      {/* overflow-auto here handles vertical scroll; table itself handles horizontal */}
+      <div className="flex-1 min-h-0 overflow-auto pb-16 lg:pb-0">
+
+        {loading && (
+          <div className="h-full flex items-center justify-center">
+            <Loader2 size={32} className="text-sky-500 animate-spin" />
+          </div>
+        )}
+
+        {!loading && error && (
+          <div className="mx-3 mt-3 text-red-400 text-sm bg-red-900/20 border border-red-700 rounded-lg p-3">
+            {error}
+          </div>
+        )}
+
+        {!loading && chain && <OptionsChainTable chain={chain} />}
+
+        {!loading && !chain && !error && (
+          <div className="h-full flex items-center justify-center text-gray-500 text-sm">
+            Enter a symbol above to view its options chain
+          </div>
+        )}
+      </div>
     </div>
   );
 };
 
+// ---------------------------------------------------------------------------
+// Chain table with sticky strike column
+// ---------------------------------------------------------------------------
+
 const OptionsChainTable: React.FC<{ chain: OptionsChain }> = ({ chain }) => {
+  const atmRowRef = useRef<HTMLTableRowElement | null>(null);
+
   // Merge calls and puts by strike
   const allStrikes = Array.from(
     new Set([
@@ -140,90 +177,108 @@ const OptionsChainTable: React.FC<{ chain: OptionsChain }> = ({ chain }) => {
     ])
   ).sort((a, b) => a - b);
 
-  const callsByStrike = Object.fromEntries(
-    chain.calls.map((c) => [c.strike, c])
-  );
-  const putsByStrike = Object.fromEntries(chain.puts.map((p) => [p.strike, p]));
+  const callsByStrike = Object.fromEntries(chain.calls.map((c) => [c.strike, c]));
+  const putsByStrike  = Object.fromEntries(chain.puts.map((p) => [p.strike, p]));
 
-  const headerCls =
-    "px-2 py-1.5 text-xs font-medium text-gray-400 uppercase tracking-wider";
-  const cellCls = "px-2 py-1.5 text-xs font-mono";
+  // Auto-scroll ATM row into view when chain changes
+  useEffect(() => {
+    if (atmRowRef.current) {
+      atmRowRef.current.scrollIntoView({ block: "center", behavior: "smooth" });
+    }
+  }, [chain]);
+
+  // Column class helpers
+  const thCall = "px-2 py-1.5 text-right text-[10px] font-semibold text-green-500 uppercase tracking-wide whitespace-nowrap";
+  const thPut  = "px-2 py-1.5 text-left  text-[10px] font-semibold text-red-400  uppercase tracking-wide whitespace-nowrap";
+  const thStrike =
+    "px-2 py-1.5 text-center text-[10px] font-semibold text-white uppercase tracking-wide whitespace-nowrap " +
+    "sticky left-0 z-20 bg-gray-800 border-x border-gray-700 min-w-[64px]";
+
+  const tdCall   = "px-2 py-1.5 text-right text-xs font-mono whitespace-nowrap";
+  const tdPut    = "px-2 py-1.5 text-left  text-xs font-mono whitespace-nowrap";
+  const tdStrike =
+    "px-2 py-1.5 text-center text-xs font-bold whitespace-nowrap " +
+    "sticky left-0 z-10 border-x border-gray-700";
 
   return (
-    <table className="w-full border-collapse text-xs">
-      <thead className="bg-gray-800 sticky top-0">
+    <table className="w-full border-collapse text-xs min-w-[480px]">
+      <thead className="bg-gray-800 sticky top-0 z-20">
         <tr>
-          {/* Calls */}
-          <th className={`${headerCls} text-right text-green-500`}>Bid</th>
-          <th className={`${headerCls} text-right text-green-500`}>Ask</th>
-          <th className={`${headerCls} text-right text-green-500`}>IV</th>
-          <th className={`${headerCls} text-right text-green-500`}>Delta</th>
-          <th className={`${headerCls} text-right text-green-500`}>OI</th>
-          {/* Strike */}
-          <th className={`${headerCls} text-center bg-gray-700 text-white`}>
-            Strike
-          </th>
-          {/* Puts */}
-          <th className={`${headerCls} text-left text-red-400`}>OI</th>
-          <th className={`${headerCls} text-left text-red-400`}>Delta</th>
-          <th className={`${headerCls} text-left text-red-400`}>IV</th>
-          <th className={`${headerCls} text-left text-red-400`}>Bid</th>
-          <th className={`${headerCls} text-left text-red-400`}>Ask</th>
+          {/* Call side headers */}
+          <th className={thCall}>Bid</th>
+          <th className={thCall}>Ask</th>
+          <th className={`${thCall} hidden sm:table-cell`}>IV</th>
+          <th className={`${thCall} hidden sm:table-cell`}>Δ</th>
+          <th className={`${thCall} hidden md:table-cell`}>OI</th>
+          {/* Strike — sticky */}
+          <th className={thStrike}>Strike</th>
+          {/* Put side headers */}
+          <th className={`${thPut} hidden md:table-cell`}>OI</th>
+          <th className={`${thPut} hidden sm:table-cell`}>Δ</th>
+          <th className={`${thPut} hidden sm:table-cell`}>IV</th>
+          <th className={thPut}>Bid</th>
+          <th className={thPut}>Ask</th>
         </tr>
       </thead>
       <tbody>
         {allStrikes.map((strike) => {
-          const call = callsByStrike[strike];
-          const put = putsByStrike[strike];
+          const call  = callsByStrike[strike];
+          const put   = putsByStrike[strike];
           const isATM =
+            chain.spot_price != null &&
             Math.abs(strike - chain.spot_price) / chain.spot_price < 0.02;
 
           return (
             <tr
               key={strike}
-              className={`border-b border-gray-800 ${
-                isATM ? "bg-sky-900/20" : "hover:bg-gray-800/40"
+              ref={isATM ? atmRowRef : undefined}
+              className={`border-b border-gray-800/60 ${
+                isATM ? "bg-sky-900/20" : "hover:bg-gray-800/30"
               }`}
             >
-              {/* Call columns */}
-              <td className={`${cellCls} text-right text-green-400`}>
-                {call ? formatCurrency(call.bid) : "-"}
+              {/* Calls */}
+              <td className={`${tdCall} text-green-400`}>
+                {call?.bid != null ? formatCurrency(call.bid) : <Dash />}
               </td>
-              <td className={`${cellCls} text-right text-green-400`}>
-                {call ? formatCurrency(call.ask) : "-"}
+              <td className={`${tdCall} text-green-400`}>
+                {call?.ask != null ? formatCurrency(call.ask) : <Dash />}
               </td>
-              <td className={`${cellCls} text-right text-gray-300`}>
-                {call ? formatIV(call.implied_volatility) : "-"}
+              <td className={`${tdCall} text-gray-300 hidden sm:table-cell`}>
+                {call?.implied_volatility != null ? formatIV(call.implied_volatility) : <Dash />}
               </td>
-              <td className={`${cellCls} text-right text-gray-300`}>
-                {call ? formatGreek(call.delta) : "-"}
+              <td className={`${tdCall} text-gray-300 hidden sm:table-cell`}>
+                {call?.delta != null ? formatGreek(call.delta) : <Dash />}
               </td>
-              <td className={`${cellCls} text-right text-gray-400`}>
-                {call ? call.open_interest.toLocaleString() : "-"}
+              <td className={`${tdCall} text-gray-400 hidden md:table-cell`}>
+                {call?.open_interest != null ? call.open_interest.toLocaleString() : <Dash />}
               </td>
-              {/* Strike */}
+
+              {/* Strike — sticky */}
               <td
-                className={`${cellCls} text-center font-bold bg-gray-700 ${
-                  isATM ? "text-sky-300" : "text-white"
+                className={`${tdStrike} ${
+                  isATM
+                    ? "text-sky-300 bg-sky-900/40"
+                    : "text-white bg-gray-800"
                 }`}
               >
                 ${strike}
               </td>
-              {/* Put columns */}
-              <td className={`${cellCls} text-left text-gray-400`}>
-                {put ? put.open_interest.toLocaleString() : "-"}
+
+              {/* Puts */}
+              <td className={`${tdPut} text-gray-400 hidden md:table-cell`}>
+                {put?.open_interest != null ? put.open_interest.toLocaleString() : <Dash />}
               </td>
-              <td className={`${cellCls} text-left text-gray-300`}>
-                {put ? formatGreek(put.delta) : "-"}
+              <td className={`${tdPut} text-gray-300 hidden sm:table-cell`}>
+                {put?.delta != null ? formatGreek(put.delta) : <Dash />}
               </td>
-              <td className={`${cellCls} text-left text-gray-300`}>
-                {put ? formatIV(put.implied_volatility) : "-"}
+              <td className={`${tdPut} text-gray-300 hidden sm:table-cell`}>
+                {put?.implied_volatility != null ? formatIV(put.implied_volatility) : <Dash />}
               </td>
-              <td className={`${cellCls} text-left text-red-400`}>
-                {put ? formatCurrency(put.bid) : "-"}
+              <td className={`${tdPut} text-red-400`}>
+                {put?.bid != null ? formatCurrency(put.bid) : <Dash />}
               </td>
-              <td className={`${cellCls} text-left text-red-400`}>
-                {put ? formatCurrency(put.ask) : "-"}
+              <td className={`${tdPut} text-red-400`}>
+                {put?.ask != null ? formatCurrency(put.ask) : <Dash />}
               </td>
             </tr>
           );
@@ -232,3 +287,7 @@ const OptionsChainTable: React.FC<{ chain: OptionsChain }> = ({ chain }) => {
     </table>
   );
 };
+
+const Dash: React.FC = () => (
+  <span className="text-gray-700">—</span>
+);

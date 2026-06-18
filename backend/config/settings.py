@@ -15,6 +15,17 @@ class Settings(BaseSettings):
         case_sensitive=False,
     )
 
+    # Schwab Market Data API (real-time options + broker greeks)
+    SCHWAB_APP_KEY: str = ""
+    SCHWAB_APP_SECRET: str = ""
+    SCHWAB_TOKEN_PATH: str = "backend/.schwab_token.json"
+    # Must match the redirect URI registered in your Schwab developer app
+    SCHWAB_CALLBACK_URL: str = "https://127.0.0.1:8182/"
+    # Fernet key for encrypting the token file at rest.
+    # Generate once: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+    # Leave blank to disable encryption (plaintext token, backward-compatible).
+    SCHWAB_TOKEN_KEY: str = ""
+
     # Financial Modeling Prep (fundamentals)
     FMP_API_KEY: str = ""
     FMP_BASE_URL: str = "https://financialmodelingprep.com/stable"

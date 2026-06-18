@@ -171,7 +171,7 @@ export const ResultsTable: React.FC = () => {
         accessorFn: (r) => r.spread.net_debit,
         cell: (info) => (
           <span className="text-gray-300 text-xs font-mono">
-            {formatCurrency((info.getValue() as number) * 100)}
+            {formatCurrency(info.getValue() as number)}
           </span>
         ),
         size: 80,
@@ -190,6 +190,29 @@ export const ResultsTable: React.FC = () => {
           );
         },
         size: 90,
+      },
+      {
+        id: "earnings",
+        header: () => <span>Earnings</span>,
+        meta: { mobileHidden: true },
+        accessorFn: (r) => r.spread.days_to_earnings,
+        cell: (info) => {
+          const days = info.getValue() as number | null;
+          const row = info.row.original;
+          if (days == null || days < 0) return <span className="text-gray-600 text-xs">—</span>;
+          const urgencyColor =
+            days <= 20
+              ? "text-red-400"
+              : days <= 35
+              ? "text-amber-400"
+              : "text-gray-400";
+          return (
+            <span className={`text-xs font-mono ${urgencyColor}`} title={row.spread.next_earnings_date ?? undefined}>
+              {days}d
+            </span>
+          );
+        },
+        size: 70,
       },
     ],
     []

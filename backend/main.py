@@ -14,6 +14,7 @@ Swagger docs:
     http://localhost:8000/docs
 """
 
+import asyncio
 import base64
 import logging
 import secrets
@@ -35,6 +36,7 @@ from backend.api.cache import RedisCache
 from backend.api.limiter import limiter
 from backend.api.routes import fundamentals, ml, options, scanner, sentiment
 from backend.config.settings import get_settings
+from backend.data.schwab_client import SchwabClient
 from backend.ml.model import SpreadRanker
 from backend.sentiment.finbert_loader import FinBERTLoader
 
@@ -42,7 +44,49 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(name)s — %(message)s",
 )
+# Also write WARNING+ to a persistent file so zero-result scans are diagnosable
+_log_dir = Path(__file__).parent.parent / "logs"
+_log_dir.mkdir(exist_ok=True)
+_file_handler = logging.FileHandler(_log_dir / "backend.log", encoding="utf-8")
+_file_handler.setLevel(logging.WARNING)
+_file_handler.setFormatter(
+    logging.Formatter("%(asctime)s %(levelname)s %(name)s — %(message)s")
+)
+logging.getLogger().addHandler(_file_handler)
 logger = logging.getLogger(__name__)
+
+_SCHWAB_AUTH_CMD = (
+    "backend/.venv/Scripts/python.exe -m backend.scripts.schwab_auth"
+)
+
+
+async def _schwab_token_watchdog(schwab_client: SchwabClient) -> None:
+    """
+    Background task: check Schwab refresh-token expiry every hour and log
+    warnings so the user has time to re-run schwab_auth before the token lapses.
+
+    Thresholds:
+      <= 2 days  → WARNING
+      <= 1 day   → ERROR  (act now or Schwab data goes dark)
+    """
+    while True:
+        await asyncio.sleep(3600)  # check every hour
+        days = schwab_client.token_days_remaining()
+        if days is None:
+            continue
+        if days <= 1.0:
+            logger.error(
+                "SCHWAB TOKEN CRITICAL — expires in %.1f day(s). "
+                "Re-run NOW: %s",
+                days,
+                _SCHWAB_AUTH_CMD,
+            )
+        elif days <= 2.0:
+            logger.warning(
+                "Schwab token expires in %.1f day(s) — re-run soon: %s",
+                days,
+                _SCHWAB_AUTH_CMD,
+            )
 
 
 @asynccontextmanager
@@ -61,6 +105,40 @@ async def lifespan(app: FastAPI):
         redis_client = None  # type: ignore[assignment]
 
     app.state.cache = RedisCache(redis_client)  # type: ignore[arg-type]
+
+    # --- Schwab (singleton — decrypts token once for the process lifetime) ---
+    logger.info("Initialising Schwab client...")
+    schwab_client = SchwabClient(
+        app_key=settings.SCHWAB_APP_KEY,
+        app_secret=settings.SCHWAB_APP_SECRET,
+        token_path=settings.SCHWAB_TOKEN_PATH,
+    )
+    app.state.schwab_client = schwab_client
+    if schwab_client.is_available:
+        days = schwab_client.token_days_remaining()
+        if days is not None:
+            if days <= 1.0:
+                logger.error(
+                    "SCHWAB TOKEN CRITICAL — expires in %.1f day(s). "
+                    "Re-run NOW: %s",
+                    days,
+                    _SCHWAB_AUTH_CMD,
+                )
+            elif days <= 2.0:
+                logger.warning(
+                    "Schwab token expires in %.1f day(s) — re-run soon: %s",
+                    days,
+                    _SCHWAB_AUTH_CMD,
+                )
+            else:
+                logger.info("SchwabClient ready — token valid for %.1f day(s)", days)
+        # Start background expiry watchdog
+        watchdog_task = asyncio.create_task(
+            _schwab_token_watchdog(schwab_client),
+            name="schwab_token_watchdog",
+        )
+    else:
+        watchdog_task = None
 
     # --- FinBERT ---
     logger.info("Loading FinBERT model (ProsusAI/finbert)...")
@@ -91,6 +169,8 @@ async def lifespan(app: FastAPI):
 
     # --- Shutdown ---
     logger.info("Shutting down Leaps2.0...")
+    if watchdog_task is not None:
+        watchdog_task.cancel()
     finbert_loader.unload()
     if redis_client:
         await redis_client.aclose()
@@ -253,10 +333,14 @@ app.include_router(ml.router, prefix="/api/v1/ml", tags=["ML"])
 @app.get("/health")
 async def health_check(request: Request):
     """Public health check — returns minimal status info only."""
+    schwab: SchwabClient = request.app.state.schwab_client
+    days = schwab.token_days_remaining()
     return {
         "status": "ok",
         "finbert_loaded": request.app.state.finbert_loader.is_loaded(),
         "ml_trained": not request.app.state.ml_ranker._is_placeholder,
+        "schwab_available": schwab.is_available,
+        "schwab_token_days_remaining": round(days, 1) if days is not None else None,
     }
 
 

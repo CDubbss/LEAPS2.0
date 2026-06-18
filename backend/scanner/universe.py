@@ -24,7 +24,7 @@ _NASDAQ_100 = [
     "MDLZ", "ADI", "SNPS", "CDNS", "INTC", "CME", "PYPL", "MRVL", "CRWD",
     "ABNB", "CTAS", "MAR", "WDAY", "FTNT", "TEAM", "DXCM", "PCAR", "KDP",
     "CHTR", "MNST", "PAYX", "LULU", "FAST", "BIIB", "VRSK", "CPRT", "ON",
-    "CTSH", "ILMN", "DDOG", "ZS", "ANSS", "SPLK", "MCHP", "ENPH",
+    "CTSH", "ILMN", "DDOG", "ZS", "ANSS", "MCHP", "ENPH",  # SPLK removed — Cisco acquired Mar 2024
     "IDXX", "EXC", "XEL", "AEP", "FANG", "ZM", "ODFL", "NXPI", "ROST",
     "DLTR", "GEHC", "WBD", "SIRI", "GFS", "CEG",
 ]
@@ -50,7 +50,7 @@ _NASDAQ_EXTENDED = [
     # Bitcoin proxy
     "MSTR",
     # Biotech (high-options activity)
-    "MRNA", "BNTX", "NVAX", "SAVA", "LABU",
+    "MRNA", "BNTX", "NVAX", "LABU",  # SAVA removed — trial failure, near-zero liquidity
     # Other high-liquidity Nasdaq names
     "CELH", "UBER", "LYFT", "U",
 ]
@@ -74,7 +74,7 @@ _SP500_FINANCIALS = [
     "STT", "BK",
     # Insurance
     "AIG", "MET", "PRU", "AFL", "ALL", "TRV", "HIG", "CB", "PGR", "CINF",
-    "RE", "WRB", "ACGL", "L",
+    "EG", "WRB", "ACGL", "L",  # RE → EG (Everest Group ticker change Sep 2023)
     # Exchanges & data
     "ICE", "SPGI", "MCO", "NDAQ", "CBOE", "CME", "MSCI", "FDS",
     # Brokers / wealth
@@ -152,20 +152,20 @@ _SP500_CONSUMER_STAPLES = [
 # --- Energy ---
 _SP500_ENERGY = [
     "XOM", "CVX", "COP", "MPC", "VLO", "PSX", "OXY", "HAL", "SLB", "EOG",
-    "PXD", "DVN", "FANG", "BKR", "CTRA", "MRO", "APA", "EQT",
+    "DVN", "FANG", "BKR", "CTRA", "MRO", "APA", "EQT",  # PXD removed — ExxonMobil acquired Oct 2023
     "WMB", "KMI", "OKE", "NOV",
 ]
 
 # --- Industrials ---
 _SP500_INDUSTRIALS = [
     # Defense
-    "BA", "LMT", "RTX", "NOC", "GD", "HII", "L3H",
+    "BA", "LMT", "RTX", "NOC", "GD", "HII", "LHX",  # L3H → LHX (L3Harris Technologies)
     # Industrial conglomerates / machinery
     "CAT", "DE", "EMR", "ETN", "GE", "MMM", "HON", "PH", "ITW", "IR",
     "AME", "GWW", "OTIS", "CARR", "XYL", "ROP", "DOV", "IEX", "FTV",
     "ROK", "CMI", "PCAR", "HUBB",
     # Aerospace components
-    "HWM", "TDG", "SPR", "KTOS",
+    "HWM", "TDG", "KTOS",  # SPR removed — Spirit AeroSystems acquired/delisted
     # Transportation
     "FDX", "UPS", "UNP", "NSC", "CSX", "DAL", "UAL", "LUV", "AAL",
     "JBHT", "ODFL", "CHRW", "EXPD", "SAIA", "WAB",
@@ -317,23 +317,31 @@ _ETFS = [
 ]
 
 # ---------------------------------------------------------------------------
+# Named index groups — keyed by the values accepted in ScannerFilters.index_groups
+# ---------------------------------------------------------------------------
+_SP500_ALL = (
+    _SP500_FINANCIALS + _SP500_HEALTHCARE + _SP500_TECH
+    + _SP500_CONSUMER_DISC + _SP500_CONSUMER_STAPLES + _SP500_ENERGY
+    + _SP500_INDUSTRIALS + _SP500_MATERIALS + _SP500_REAL_ESTATE
+    + _SP500_UTILITIES + _SP500_COMMUNICATION
+)
+
+UNIVERSE_GROUPS: dict[str, list[str]] = {
+    "nasdaq_100": _NASDAQ_100,
+    "nasdaq_extended": _NASDAQ_EXTENDED,
+    "sp500": _SP500_ALL,
+    "msci": _MSCI_COVERAGE,
+    "etfs": _ETFS,
+}
+
+# ---------------------------------------------------------------------------
 # Final universe — deduplicated, sorted for readability
 # ---------------------------------------------------------------------------
 DEFAULT_UNIVERSE: list[str] = sorted(
     set(
         _NASDAQ_100
         + _NASDAQ_EXTENDED
-        + _SP500_FINANCIALS
-        + _SP500_HEALTHCARE
-        + _SP500_TECH
-        + _SP500_CONSUMER_DISC
-        + _SP500_CONSUMER_STAPLES
-        + _SP500_ENERGY
-        + _SP500_INDUSTRIALS
-        + _SP500_MATERIALS
-        + _SP500_REAL_ESTATE
-        + _SP500_UTILITIES
-        + _SP500_COMMUNICATION
+        + _SP500_ALL
         + _MSCI_COVERAGE
         + _ETFS
     )
@@ -343,12 +351,21 @@ DEFAULT_UNIVERSE: list[str] = sorted(
 class UniverseBuilder:
     """
     Determines which symbols to scan based on user filters.
-    Falls back to DEFAULT_UNIVERSE if no symbols are specified.
+    Priority: explicit symbols > index_groups > full DEFAULT_UNIVERSE.
     """
 
     async def build(self, filters: ScannerFilters) -> list[str]:
         if filters.symbols:
             return [s.upper().strip() for s in filters.symbols if s.strip()]
+        if filters.index_groups:
+            combined: set[str] = set()
+            for group in filters.index_groups:
+                combined.update(UNIVERSE_GROUPS.get(group, []))
+            symbols = sorted(combined)
+            logger.info(
+                "Using index groups %s: %d symbols", filters.index_groups, len(symbols)
+            )
+            return symbols
         logger.info("Using default universe: %d symbols", len(DEFAULT_UNIVERSE))
         return DEFAULT_UNIVERSE
 

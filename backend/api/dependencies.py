@@ -10,6 +10,7 @@ from backend.api.cache import RedisCache
 from backend.config.settings import Settings, get_settings
 from backend.data.fmp_client import FMPClient
 from backend.data.news_aggregator import NewsAggregator
+from backend.data.schwab_client import SchwabClient
 from backend.data.yfinance_client import YFinanceClient
 from backend.ml.model import SpreadRanker
 from backend.scanner.scanner import OptionsScanner
@@ -38,6 +39,10 @@ def get_yf_client() -> YFinanceClient:
     return YFinanceClient()
 
 
+def get_schwab_client(request: Request) -> SchwabClient:
+    return request.app.state.schwab_client
+
+
 def get_fmp_client() -> FMPClient:
     settings = get_settings()
     return FMPClient(api_key=settings.FMP_API_KEY)
@@ -51,6 +56,7 @@ def get_scanner(request: Request) -> OptionsScanner:
     """Build and return the scanner with all injected dependencies."""
     settings = get_settings()
     yf_client = YFinanceClient()
+    schwab_client: SchwabClient = request.app.state.schwab_client
     fmp_client = FMPClient(api_key=settings.FMP_API_KEY)
     news_agg = NewsAggregator(yf_client)
     sent_scorer = SentimentScorer(request.app.state.finbert_loader)
@@ -60,6 +66,7 @@ def get_scanner(request: Request) -> OptionsScanner:
 
     return OptionsScanner(
         yf_client=yf_client,
+        schwab_client=schwab_client,
         fmp_client=fmp_client,
         news_aggregator=news_agg,
         sentiment_scorer=sent_scorer,

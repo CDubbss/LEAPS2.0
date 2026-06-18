@@ -46,7 +46,7 @@ export const SpreadDetailCard: React.FC<Props> = ({ item }) => {
         </div>
         <div className="text-right">
           <div className="text-xl font-bold text-white">
-            {formatCurrency(spread.net_debit * 100)}
+            {formatCurrency(spread.net_debit)}
           </div>
           <div className="text-xs text-gray-400">Net Debit / contract</div>
         </div>

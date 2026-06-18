@@ -11,12 +11,8 @@ from backend.scanner.greeks_calculator import compute_probability_of_profit
 
 logger = logging.getLogger(__name__)
 
-# Max OTM % for the long leg of a spread (don't go too far out of the money)
-MAX_OTM_PCT = 0.20
-
-# Typical standard spread widths to consider (points)
-# We'll derive natural widths from available strikes rather than hardcoding
-MAX_SPREAD_WIDTH_STRIKES = 5  # max N strikes apart for spreads
+# Max number of strikes apart for short leg (keeps spread width reasonable)
+MAX_SPREAD_WIDTH_STRIKES = 5
 
 
 class SpreadConstructor:
@@ -46,6 +42,10 @@ class SpreadConstructor:
                 spreads.extend(self._build_leaps(calls, spot_price, SpreadType.LEAP_CALL))
             elif strategy == SpreadType.LEAP_PUT:
                 spreads.extend(self._build_leaps(puts, spot_price, SpreadType.LEAP_PUT))
+            elif strategy == SpreadType.EARNINGS_CALL:
+                spreads.extend(self._build_leaps(calls, spot_price, SpreadType.EARNINGS_CALL))
+            elif strategy == SpreadType.EARNINGS_PUT:
+                spreads.extend(self._build_leaps(puts, spot_price, SpreadType.EARNINGS_PUT))
         return spreads
 
     def _build_bull_call_spreads(
@@ -70,9 +70,6 @@ class SpreadConstructor:
             dte = (expiry - date.today()).days
 
             for i, long_leg in enumerate(sorted_legs):
-                # Long leg should be at or below the money (not too far OTM)
-                if long_leg.strike > spot * (1 + MAX_OTM_PCT):
-                    break
 
                 # Short leg: must be higher strike, same expiry, within N strikes
                 for short_leg in sorted_legs[i + 1: i + 1 + MAX_SPREAD_WIDTH_STRIKES]:
@@ -140,9 +137,7 @@ class SpreadConstructor:
 
             for i, long_leg in enumerate(sorted_legs):
                 # Long leg: at or slightly above the money
-                if long_leg.strike < spot * (1 - MAX_OTM_PCT):
-                    break
-
+        
                 for short_leg in sorted_legs[i + 1: i + 1 + MAX_SPREAD_WIDTH_STRIKES]:
                     if short_leg.bid <= 0:
                         continue
@@ -196,17 +191,14 @@ class SpreadConstructor:
         spread_type: SpreadType,
     ) -> list[SpreadCandidate]:
         """
-        LEAPS single-leg: long deep ITM call or put with DTE >= 365.
+        Single-leg long call or put. DTE range enforced by scanner pre-filter.
         Selection criteria: delta >= 0.70 (deep ITM, stock replacement).
         """
         spreads = []
-        is_call = spread_type == SpreadType.LEAP_CALL
+        is_call = spread_type in (SpreadType.LEAP_CALL, SpreadType.EARNINGS_CALL)
 
         for opt in options:
             dte = (opt.expiration - date.today()).days
-            if dte < 180:  # absolute floor; DTE range is enforced by scanner pre-filter
-                continue
-
             premium = opt.ask
             if premium <= 0:
                 continue
