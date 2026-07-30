@@ -24,6 +24,11 @@ backend/ml/artifacts/*.joblib
 backend/ml/artifacts/*.json
 backend/ml/data/*.db
 
+# Runtime SQLite databases + WAL journals (never commit)
+backend/data/*.db
+*.db-wal
+*.db-shm
+
 # Logs and generated scan output (runtime only)
 logs/
 

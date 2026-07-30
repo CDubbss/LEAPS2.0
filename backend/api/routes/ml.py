@@ -421,6 +421,28 @@ async def get_ticker_snapshot_history(
     return await asyncio.to_thread(_query_ticker_snapshot_history, symbol)
 
 
+_BACKTEST_REPORT_PATH = "backend/ml/artifacts/backtest_report.json"
+
+
+@router.get("/backtest-report")
+async def get_backtest_report() -> dict:
+    """Return the latest backtest report JSON artifact."""
+    if not os.path.exists(_BACKTEST_REPORT_PATH):
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                "No backtest report found. Generate one with: "
+                "python -m backend.ml.backtest --json"
+            ),
+        )
+
+    def _read() -> dict:
+        with open(_BACKTEST_REPORT_PATH) as f:
+            return json.load(f)
+
+    return await asyncio.to_thread(_read)
+
+
 @router.get("/status")
 async def get_ml_status(
     ranker: SpreadRanker = Depends(get_ml_ranker),

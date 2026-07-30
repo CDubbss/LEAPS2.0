@@ -14,6 +14,7 @@ import {
 } from "recharts";
 import { mlApi, type TickerSpread, type BucketSpread, type SpreadDetail } from "@/api/client";
 import { RefreshCw } from "lucide-react";
+import { BacktestReportSection } from "@/components/ml/BacktestReportSection";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -1048,6 +1049,9 @@ export function MLDashboardPage() {
           </div>
         )}
 
+        {/* Backtest report — walk-forward validation of scan-time scores */}
+        <BacktestReportSection />
+
         {/* Commands reference */}
         <div className="bg-gray-800/50 rounded-lg p-4 border border-gray-700">
           <h2 className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-4">
@@ -1146,8 +1150,8 @@ export function MLDashboardPage() {
               </div>
               <div className="space-y-2">
                 <div>
-                  <div className="text-gray-500"># Walk-forward backtest over a date range</div>
-                  <div className="text-sky-300 mt-0.5">backend\.venv\Scripts\python.exe -m backend.ml.backtest --start 2024-01-01 --end 2025-01-01</div>
+                  <div className="text-gray-500"># Walk-forward backtest report (--since limits to real-model era, --json writes artifact)</div>
+                  <div className="text-sky-300 mt-0.5">backend\.venv\Scripts\python.exe -m backend.ml.backtest --since 2026-06-13 --json</div>
                 </div>
               </div>
             </div>

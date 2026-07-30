@@ -18,6 +18,7 @@ redis==5.0.8
 numpy>=2.4.0
 pandas>=3.0.0
 scipy>=1.17.0
+lxml>=6.0.0  # yfinance get_earnings_dates (Ted gate 7) parses HTML via pandas.read_html
 
 # Machine learning
 xgboost==3.2.0

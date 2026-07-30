@@ -98,7 +98,9 @@ LABEL_TIERS = [
     ("interim_10d",   7,   10),   # best of days  3-10  (~2 calendar weeks)
     ("interim_21d",  21,   21),   # best of days  3-21  (~1 month)
     ("interim_30d",  28,   35),   # best of days  3-35  (~7 weeks)
-    ("interim_90d",  90,   90),   # best of days  3-90  (~4.5 months)
+    ("interim_45d",  40,   45),   # best of days  3-45  (~2 months)
+    ("interim_60d",  55,   60),   # best of days  3-60  (~3 months)
+    ("interim_90d",  80,   90),   # best of days  3-90  (~4.5 months)
     ("interim_180d", 180,  180),  # best of days  3-180 (~9 months)
     ("interim_360d", 360,  360),  # best of days  3-360 (~18 months)
     ("interim_540d", 540,  540),  # best of days  3-540 (~27 months)
@@ -111,12 +113,14 @@ TIER_RANK: dict[str, int] = {
     "interim_10d":  2,
     "interim_21d":  3,
     "interim_30d":  4,
-    "interim_90d":  5,
-    "interim_180d": 6,
-    "interim_360d": 7,
-    "interim_540d": 8,
-    "interim_720d": 9,
-    "expiry":       10,
+    "interim_45d":  5,
+    "interim_60d":  6,
+    "interim_90d":  7,
+    "interim_180d": 8,
+    "interim_360d": 9,
+    "interim_540d": 10,
+    "interim_720d": 11,
+    "expiry":       12,
 }
 
 
@@ -583,6 +587,145 @@ def collect_snapshots(conn: sqlite3.Connection, dry_run: bool = False) -> int:
     return total_written
 
 
+PROFIT_TARGET_PCT = 50.0   # exit when spread P&L reaches +50%
+STOP_LOSS_PCT = -50.0      # typical exit when P&L dips to -50% of debit
+
+# Commission: $13 per 10-contract spread per side (open or close).
+# Round trip = $26 for 10 contracts = $2.60/contract = $0.026/share.
+COMMISSION_PER_CONTRACT = 2.60   # $13 / 10 contracts × 2 sides (open + close) ÷ 10
+CONTRACTS_PER_TRADE     = 10
+
+
+def _commission_adjusted_target(entry_debit: float) -> float:
+    """
+    Return the P&L % threshold that equals +50% profit AFTER commissions.
+
+    Commission per share: $26 round trip / 10 contracts / 100 shares = $0.026
+    The raw spread P&L must exceed 50% of debit PLUS commissions.
+    """
+    if not entry_debit or entry_debit <= 0:
+        return PROFIT_TARGET_PCT
+    commission_per_share = (COMMISSION_PER_CONTRACT * 2) / (CONTRACTS_PER_TRADE * 100)
+    # Target P&L % = (target_dollar + commission) / entry_debit * 100
+    target_dollar = entry_debit * (PROFIT_TARGET_PCT / 100) + commission_per_share
+    return (target_dollar / entry_debit) * 100
+
+
+def compute_strategy_outcomes(conn: sqlite3.Connection, dry_run: bool = False) -> int:
+    """
+    Walk each spread's snapshots CHRONOLOGICALLY and apply the exit rules —
+    whichever threshold is touched first decides the outcome:
+
+    Win  = P&L reached the commission-adjusted +50% target first
+    Loss = P&L dipped to -50% first (typical stop — the trader exits there),
+           OR the spread expired without ever reaching the target
+    Open = neither threshold touched and not yet expired
+
+    Recomputes ALL rows with snapshots on every run (not just unlabeled ones)
+    so rule changes retroactively relabel history; writes only when the
+    stored values actually change.
+
+    Note: snapshots are interval-based — a dip below -50% between snapshot
+    days is invisible, so stop-loss labels are snapshot-resolution.
+
+    Sets on spread_outcomes:
+      strategy_result  — 'win' | 'loss' | 'open'
+      days_to_target   — days to first target touch (NULL if never)
+      days_to_stop     — days to first -50% touch (NULL if never)
+      strategy_pnl     — +50 if win, P&L at stop/expiry/last observation otherwise
+    """
+    rows = conn.execute("""
+        SELECT so.id, so.entry_date, so.expiration, so.entry_net_debit,
+               so.strategy_result, so.days_to_target, so.days_to_stop, so.strategy_pnl
+        FROM spread_outcomes so
+        WHERE EXISTS (
+              SELECT 1 FROM price_snapshots ps
+              WHERE ps.outcome_id = so.id AND ps.pnl_pct IS NOT NULL
+          )
+    """).fetchall()
+
+    updated = 0
+    counts = {"win": 0, "loss": 0, "open": 0}
+    for (outcome_id, entry_str, expiry_str, entry_debit,
+         old_result, old_dtt, old_dts, old_pnl) in rows:
+        snaps = conn.execute(
+            """
+            SELECT days_since_entry, pnl_pct
+            FROM price_snapshots
+            WHERE outcome_id = ? AND pnl_pct IS NOT NULL
+            ORDER BY days_since_entry
+            """,
+            (outcome_id,),
+        ).fetchall()
+
+        if not snaps:
+            continue
+
+        target_pct = _commission_adjusted_target(entry_debit)
+        days_to_target = None
+        days_to_stop = None
+        result = None
+        strategy_pnl = None
+
+        # First-passage walk: whichever exit level is touched first wins
+        for days, pnl in snaps:
+            if pnl >= target_pct:
+                result = "win"
+                days_to_target = days
+                strategy_pnl = PROFIT_TARGET_PCT
+                break
+            if pnl <= STOP_LOSS_PCT:
+                result = "loss"
+                days_to_stop = days
+                strategy_pnl = pnl
+                break
+
+        if result is None:
+            expiry = date.fromisoformat(expiry_str)
+            if expiry <= date.today():
+                result = "loss"          # expired without reaching the target
+            else:
+                result = "open"
+            strategy_pnl = snaps[-1][1]
+
+        counts[result] += 1
+
+        strategy_pnl = round(strategy_pnl, 2)
+        unchanged = (
+            result == old_result
+            and days_to_target == old_dtt
+            and days_to_stop == old_dts
+            and old_pnl is not None
+            and abs(strategy_pnl - old_pnl) < 0.01
+        )
+        if unchanged or dry_run:
+            continue
+
+        conn.execute(
+            """
+            UPDATE spread_outcomes
+            SET strategy_result = ?, days_to_target = ?,
+                days_to_stop = ?, strategy_pnl = ?
+            WHERE id = ?
+            """,
+            (result, days_to_target, days_to_stop, strategy_pnl, outcome_id),
+        )
+        updated += 1
+        if updated % 500 == 0:
+            conn.commit()
+
+    if not dry_run:
+        conn.commit()
+
+    logger.info(
+        "Strategy outcomes: %d win / %d loss / %d open (%d rows changed) "
+        "[target=+%.0f%% after commissions, stop=%.0f%%]",
+        counts["win"], counts["loss"], counts["open"], updated,
+        PROFIT_TARGET_PCT, STOP_LOSS_PCT,
+    )
+    return updated
+
+
 def finalize_outcomes(conn: sqlite3.Connection, dry_run: bool = False) -> int:
     """
     Assign or upgrade outcome labels using a tiered system.
@@ -722,6 +865,10 @@ def _migrate(conn: sqlite3.Connection) -> None:
         ("peak_pnl_pct",        "REAL"),
         ("peak_pnl_dollars",    "REAL"),   # dollar P&L per contract at peak (pnl_pct * entry_net_debit * 100)
         ("label_source",        "TEXT"),   # interim_10d … interim_360d | expiry
+        ("strategy_result",     "TEXT"),   # win | loss | open
+        ("days_to_target",      "INTEGER"),
+        ("days_to_stop",        "INTEGER"),
+        ("strategy_pnl",        "REAL"),
     ]
     for col, typedef in new_cols:
         try:
@@ -944,6 +1091,7 @@ def label_outcomes(
             repair_result = repair_snapshots(conn, dry_run=dry_run)
         snapshots = collect_snapshots(conn, dry_run=dry_run)
         finalized = finalize_outcomes(conn, dry_run=dry_run)
+        strategy  = compute_strategy_outcomes(conn, dry_run=dry_run)
     finally:
         conn.close()
         # Log chain cache efficiency if provider supports it
@@ -955,6 +1103,7 @@ def label_outcomes(
     summary = {
         "snapshots_collected": snapshots,
         "outcomes_finalized": finalized,
+        "strategy_outcomes": strategy,
         "price_provider": _price_provider.name,
         **repair_result,
     }
@@ -1007,6 +1156,34 @@ def print_summary(db_path: str = DB_PATH) -> None:
     for src, cnt in tier_counts:
         wt = LABEL_WEIGHTS.get(src, 1.0)
         print(f"  {src:<20} {cnt:>6}  {wt:>6.2f}")
+    print(f"  {'-'*44}")
+
+    # Strategy stats (50% target / 25% stop)
+    conn2 = sqlite3.connect(db_path)
+    strat = conn2.execute("""
+        SELECT strategy_result, COUNT(*), ROUND(AVG(days_to_target), 1)
+        FROM spread_outcomes
+        WHERE strategy_result IS NOT NULL
+        GROUP BY strategy_result
+    """).fetchall()
+    if strat:
+        print(f"  {'Strategy (50/25)':<20} {'Count':>6}  {'Avg days':>6}")
+        print(f"  {'-'*44}")
+        total_strat = sum(r[1] for r in strat)
+        wins = next((r for r in strat if r[0] == 'win'), None)
+        losses = next((r for r in strat if r[0] == 'loss'), None)
+        opens = next((r for r in strat if r[0] == 'open'), None)
+        if wins:
+            print(f"  {'win':<20} {wins[1]:>6}  {wins[2] or 0:>6}")
+        if losses:
+            print(f"  {'loss':<20} {losses[1]:>6}  {'':>6}")
+        if opens:
+            print(f"  {'open':<20} {opens[1]:>6}  {'':>6}")
+        win_count = wins[1] if wins else 0
+        decided = win_count + (losses[1] if losses else 0)
+        if decided > 0:
+            print(f"  {'Win rate':<20} {win_count/decided*100:>5.1f}%")
+    conn2.close()
     print(f"{'='*w}\n")
 
 

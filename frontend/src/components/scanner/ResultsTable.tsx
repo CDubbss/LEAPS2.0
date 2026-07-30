@@ -32,6 +32,39 @@ import { InfoTooltip } from "@/components/ui/Tooltip";
 import { TOOLTIPS } from "@/utils/tooltips";
 import { TickerModal } from "@/components/ticker/TickerModal";
 
+/**
+ * Strategy-fit checks — mirrors the user's vertical LEAPS spread rules.
+ * Returns the list of failed checks (empty = full fit).
+ */
+const strategyFitIssues = (r: RankedSpread): string[] => {
+  const { spread } = r;
+  const long = spread.long_leg;
+  const issues: string[] = [];
+
+  // 25% cost rule (two-leg spreads only; single-leg LEAPS exempt)
+  if (spread.spread_width > 0 && spread.net_debit / spread.spread_width > 0.2501) {
+    issues.push(
+      `Cost ${((spread.net_debit / spread.spread_width) * 100).toFixed(0)}% of width (max 25%)`
+    );
+  }
+  if (Math.abs(long.delta) > 0.33) {
+    issues.push(`Delta ${Math.abs(long.delta).toFixed(2)} (max 0.33)`);
+  }
+  if (long.open_interest < 50) {
+    issues.push(`OI ${long.open_interest} (min 50)`);
+  }
+  if (long.volume < 10) {
+    issues.push(`Volume ${long.volume} (min 10)`);
+  }
+  const mid = (long.bid + long.ask) / 2;
+  if (mid > 0 && (long.ask - long.bid) / mid > 0.25) {
+    issues.push(
+      `Bid-ask ${(((long.ask - long.bid) / mid) * 100).toFixed(0)}% (max 25%)`
+    );
+  }
+  return issues;
+};
+
 export const ResultsTable: React.FC = () => {
   const { result, selectedSpread, selectSpread } = useScannerStore();
   const [sorting, setSorting] = useState<SortingState>([
@@ -80,6 +113,34 @@ export const ResultsTable: React.FC = () => {
           </span>
         ),
         size: 100,
+      },
+      {
+        id: "fit",
+        header: () => (
+          <span>
+            Fit <InfoTooltip content="Strategy fit: 25% cost rule, delta ≤ 0.33, OI ≥ 50, volume ≥ 10, bid-ask ≤ 25%. Hover a badge to see which checks failed." />
+          </span>
+        ),
+        accessorFn: (r) => strategyFitIssues(r).length,
+        cell: (info) => {
+          const issues = strategyFitIssues(info.row.original);
+          return issues.length === 0 ? (
+            <span
+              className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-green-600/30 text-green-300 border border-green-700"
+              title="Passes all strategy checks"
+            >
+              FIT
+            </span>
+          ) : (
+            <span
+              className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-amber-600/20 text-amber-300 border border-amber-700/60"
+              title={issues.join("\n")}
+            >
+              {issues.length} ✗
+            </span>
+          );
+        },
+        size: 55,
       },
       {
         id: "expiry",

@@ -1,6 +1,6 @@
 from typing import Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from .fundamentals import FundamentalData
 from .ml import MLPrediction
@@ -22,12 +22,12 @@ class ScannerFilters(BaseModel):
     leaps_min_dte: int = Field(default=250, ge=1, le=1825)
     leaps_max_dte: int = Field(default=730, ge=1, le=1825)
     min_iv_rank: float = Field(default=10.0, ge=0.0, le=100.0)
-    max_iv_rank: float = Field(default=70.0, ge=0.0, le=100.0)
+    max_iv_rank: float = Field(default=95.0, ge=0.0, le=100.0)
     min_iv: float = Field(default=0.0, ge=0.0, le=5.0, description="Min long leg IV (absolute, e.g. 0.15 = 15%)")
     max_iv: float = Field(default=1.0, ge=0.0, le=5.0, description="Max long leg IV (absolute, e.g. 0.60 = 60%)")
-    min_volume: int = Field(default=100, ge=0, le=10_000_000)
-    min_open_interest: int = Field(default=500, ge=0, le=10_000_000)
-    max_bid_ask_spread_pct: float = Field(default=0.50, ge=0.0, le=1.0)
+    min_volume: int = Field(default=10, ge=0, le=10_000_000)
+    min_open_interest: int = Field(default=50, ge=0, le=10_000_000)
+    max_bid_ask_spread_pct: float = Field(default=0.25, ge=0.0, le=1.0)
     min_fundamental_score: float = Field(default=0.0, ge=0.0, le=100.0)
     min_sentiment_score: float = Field(default=0.0, ge=0.0, le=100.0)
     min_probability_of_profit: float = Field(default=0.0, ge=0.0, le=1.0)
@@ -37,11 +37,24 @@ class ScannerFilters(BaseModel):
     # Spread width / cost controls (two-leg spreads only; single-leg LEAPS are exempt)
     target_spread_widths: list[float] = Field(default=[], max_length=20)
     max_spread_width: Optional[float] = Field(default=None, ge=0.0, le=100_000.0)
-    max_debit_pct_of_spread: float = Field(default=1.0, ge=0.0, le=1.0)
+    max_debit_pct_of_spread: float = Field(default=0.25, ge=0.0, le=1.0)
     max_net_debit: Optional[float] = Field(default=None, ge=0.0, le=100_000.0)
-    # Delta filter — applied to absolute value of long leg delta
-    min_long_delta: float = Field(default=0.0, ge=0.0, le=1.0)
-    max_long_delta: float = Field(default=1.0, ge=0.0, le=1.0)
+    # Delta filter — applied to the ABSOLUTE value of the long leg's delta.
+    # Negative inputs are accepted and normalized: put deltas are negative, so
+    # entering "-0.33" for a put spread means the same thing as "0.33".
+    min_long_delta: float = Field(default=0.0, ge=-1.0, le=1.0)
+    max_long_delta: float = Field(default=0.33, ge=-1.0, le=1.0)
+
+    @model_validator(mode="after")
+    def _normalize_delta_bounds(self) -> "ScannerFilters":
+        self.min_long_delta = abs(self.min_long_delta)
+        self.max_long_delta = abs(self.max_long_delta)
+        # "-0.33 to 0" entered put-style inverts after abs() — restore order
+        if self.min_long_delta > self.max_long_delta:
+            self.min_long_delta, self.max_long_delta = (
+                self.max_long_delta, self.min_long_delta,
+            )
+        return self
     # Universe filter — named index groups to scan. Empty = full universe.
     index_groups: list[str] = Field(default=[], description="Index groups: nasdaq_100, nasdaq_extended, sp500, msci, etfs")
     # Earnings play — single-leg call/put targeting near-term earnings catalyst

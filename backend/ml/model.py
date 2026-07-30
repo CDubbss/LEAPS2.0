@@ -37,6 +37,7 @@ class SpreadRanker:
         self.model_path = model_path
         self.scaler_path = scaler_path
         self.pipeline = None
+        self._strategy_pipeline = None
         self._is_placeholder = True
 
     def load(self) -> None:
@@ -57,6 +58,16 @@ class SpreadRanker:
                 self.model_path,
             )
             self._is_placeholder = True
+
+        # Load strategy classifier if available
+        strategy_path = self.model_path.replace("spread_ranker", "strategy_classifier")
+        if os.path.exists(strategy_path):
+            try:
+                import joblib
+                self._strategy_pipeline = joblib.load(strategy_path)
+                logger.info("Strategy classifier loaded from %s", strategy_path)
+            except Exception as e:
+                logger.warning("Failed to load strategy classifier: %s", e)
 
     def predict_batch(
         self, candidates: list[SpreadCandidate]
@@ -101,13 +112,24 @@ class SpreadRanker:
                 [[getattr(fv, name) for name in FEATURE_NAMES] for fv in feature_vectors],
                 dtype=float,
             )
-            scores = self.pipeline.predict(X)
+            scores = self.pipeline.predict(self._fit_width(X, self.pipeline))
             importances = self._get_importances()
+
+            # Strategy classifier: P(hit +50% target before the -50% stop)
+            if self._strategy_pipeline is not None:
+                try:
+                    Xs = self._fit_width(X, self._strategy_pipeline)
+                    win_probs = self._strategy_pipeline.predict_proba(Xs)[:, 1]
+                except Exception:
+                    win_probs = np.full(len(X), 0.5)
+            else:
+                win_probs = np.array([fv.iv_rank / 100 for fv in feature_vectors])
+
             return [
                 MLPrediction(
                     spread_quality_score=float(np.clip(scores[i], 0, 100)),
                     expected_return_pct=self._estimate_return(feature_vectors[i], scores[i]),
-                    probability_of_profit=float(feature_vectors[i].iv_rank / 100),
+                    probability_of_profit=float(np.clip(win_probs[i], 0, 1)),
                     confidence=self._compute_confidence(scores[i]),
                     feature_importances=importances,
                     is_placeholder=False,
@@ -117,6 +139,22 @@ class SpreadRanker:
         except Exception as e:
             logger.error("Feature-based ML inference error: %s", e)
             return [self._placeholder_from_fv(fv) for fv in feature_vectors]
+
+    @staticmethod
+    def _fit_width(X, pipeline):
+        """
+        Slice the feature matrix to the width the artifact was trained on.
+        FEATURE_NAMES only ever grows by appending, so an older model maps
+        onto the first N columns exactly. Lets new features ship without
+        breaking artifacts until the next retrain.
+        """
+        try:
+            expected = pipeline[0].n_features_in_
+            if X.shape[1] > expected:
+                return X[:, :expected]
+        except (AttributeError, IndexError):
+            pass
+        return X
 
     def get_feature_importance(self) -> dict[str, float]:
         """Return feature importances dict for UI display."""

@@ -27,9 +27,11 @@ Token encryption (at rest):
 
 import asyncio
 import atexit
+import json
 import logging
 import os
 import tempfile
+import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date
 from pathlib import Path
@@ -42,6 +44,21 @@ logger = logging.getLogger(__name__)
 # Keep Schwab calls modest — their market data tier allows ~120 req/min.
 _executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="schwab")
 _SCHWAB_SEMAPHORE = asyncio.Semaphore(8)
+
+# Schwab refresh tokens are valid for 7 days from creation_timestamp.
+REFRESH_TOKEN_LIFETIME_DAYS = 7.0
+# Orphaned .schwab_tmp_* files older than this are swept at startup. Generous
+# so a live process's temp file (rewritten only when a refresh succeeds) is
+# never yanked out from under it.
+TEMP_TOKEN_SWEEP_AGE_DAYS = 3.0
+
+
+def _token_creation_ts(path: Path) -> Optional[float]:
+    """creation_timestamp from a plaintext token file, or None if unreadable."""
+    try:
+        return float(json.loads(path.read_bytes())["creation_timestamp"])
+    except Exception:
+        return None
 
 
 class SchwabClient:
@@ -134,6 +151,11 @@ class SchwabClient:
         """
         atexit handler: re-encrypt the (possibly refreshed) temp token back to
         .schwab_token.enc, then delete the temp file.
+
+        Guarded against clobbering a NEWER token: if schwab_auth was re-run
+        while this process was alive, .enc on disk holds fresh credentials and
+        our in-process copy is stale. Writing ours back would silently revert
+        the re-auth, so we skip and just clean up.
         """
         if not self._temp_token_path or not self._temp_token_path.exists():
             return
@@ -142,13 +164,64 @@ class SchwabClient:
             from cryptography.fernet import Fernet
             settings = get_settings()
             fernet = Fernet(settings.SCHWAB_TOKEN_KEY.encode())
-            encrypted = fernet.encrypt(self._temp_token_path.read_bytes())
-            self._enc_path().write_bytes(encrypted)
+
+            ours = _token_creation_ts(self._temp_token_path)
+            enc_path = self._enc_path()
+            if ours is not None and enc_path.exists():
+                try:
+                    on_disk = json.loads(fernet.decrypt(enc_path.read_bytes()))
+                    theirs = float(on_disk["creation_timestamp"])
+                    if theirs > ours:
+                        logger.warning(
+                            "Skipping Schwab token re-encrypt: %s holds a newer "
+                            "token (re-authenticated while this process ran). "
+                            "Not overwriting it.",
+                            enc_path,
+                        )
+                        return
+                except Exception:
+                    pass  # unreadable .enc — fall through and write ours
+
+            self._enc_path().write_bytes(
+                fernet.encrypt(self._temp_token_path.read_bytes())
+            )
             logger.info("Schwab token re-encrypted to %s on shutdown.", self._enc_path())
         except Exception as e:
             logger.warning("Failed to re-encrypt Schwab token on shutdown: %s", e)
         finally:
             self._cleanup_temp()
+
+    def _sweep_orphaned_temps(self) -> None:
+        """
+        Delete plaintext .schwab_tmp_* files left behind by processes that were
+        killed before atexit could run (start.bat force-kills port 8001).
+
+        These contain live access/refresh tokens in plaintext, so they must not
+        accumulate. Files still held open by a live process fail to unlink on
+        Windows and are skipped silently.
+        """
+        cutoff = time.time() - TEMP_TOKEN_SWEEP_AGE_DAYS * 86400
+        removed = skipped = 0
+        try:
+            candidates = list(self.token_path.parent.glob(".schwab_tmp_*.json"))
+        except Exception:
+            return
+        for f in candidates:
+            if self._temp_token_path and f == self._temp_token_path:
+                continue
+            try:
+                if f.stat().st_mtime > cutoff:
+                    continue
+                f.unlink()
+                removed += 1
+            except Exception:
+                skipped += 1
+        if removed or skipped:
+            logger.info(
+                "Swept %d orphaned plaintext Schwab token file(s)%s",
+                removed,
+                f" ({skipped} in use or locked — skipped)" if skipped else "",
+            )
 
     def _cleanup_temp(self) -> None:
         if self._temp_token_path and self._temp_token_path.exists():
@@ -174,7 +247,28 @@ class SchwabClient:
 
         effective_path = self._resolve_token_path()
         if effective_path is None:
+            self._sweep_orphaned_temps()
             return
+
+        # Refuse to initialise on an already-expired refresh token. schwab-py
+        # retries token refresh aggressively on HTTP 400, and a storm of failed
+        # refreshes risks Schwab revoking the app authorisation outright — a far
+        # bigger problem than a lapsed token. Fall back to yfinance instead.
+        created = _token_creation_ts(effective_path)
+        if created is not None:
+            age_days = (time.time() - created) / 86400
+            if age_days >= REFRESH_TOKEN_LIFETIME_DAYS:
+                logger.error(
+                    "SCHWAB TOKEN EXPIRED — %.1f days old (limit %.0f). NOT connecting "
+                    "(avoids a failed-refresh storm that can get the app revoked). "
+                    "Using yfinance. Re-authenticate: %s",
+                    age_days,
+                    REFRESH_TOKEN_LIFETIME_DAYS,
+                    "backend\\.venv\\Scripts\\python.exe -m backend.scripts.schwab_auth",
+                )
+                self._cleanup_temp()
+                self._sweep_orphaned_temps()
+                return
 
         try:
             import schwab
@@ -189,9 +283,34 @@ class SchwabClient:
             self._cleanup_temp()
             logger.warning("Schwab client init failed: %s. Falling back to yfinance.", e)
 
+        self._sweep_orphaned_temps()
+
     @property
     def is_available(self) -> bool:
         return self._available and self._client is not None
+
+    def newer_token_on_disk(self) -> bool:
+        """
+        True when .enc holds a token created AFTER the one this process loaded.
+
+        The token file is read once at startup, so re-running schwab_auth while
+        the backend is live has no effect until restart — the running process
+        keeps using (and failing to refresh) its original credentials.
+        """
+        if not self._temp_token_path:
+            return False
+        ours = _token_creation_ts(self._temp_token_path)
+        enc_path = self._enc_path()
+        if ours is None or not enc_path.exists():
+            return False
+        try:
+            from backend.config.settings import get_settings
+            from cryptography.fernet import Fernet
+            fernet = Fernet(get_settings().SCHWAB_TOKEN_KEY.encode())
+            on_disk = json.loads(fernet.decrypt(enc_path.read_bytes()))
+            return float(on_disk["creation_timestamp"]) > ours + 1.0
+        except Exception:
+            return False
 
     def token_days_remaining(self) -> Optional[float]:
         """

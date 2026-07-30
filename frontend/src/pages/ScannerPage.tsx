@@ -11,13 +11,24 @@ import { FundamentalsCard } from "@/components/detail/FundamentalsCard";
 import { Loader2, SlidersHorizontal, X } from "lucide-react";
 
 export const ScannerPage: React.FC = () => {
-  const { result, isLoading, error, selectedSpread, selectSpread } = useScannerStore();
+  const {
+    result, isLoading, error, selectedSpread, selectSpread,
+    resumeActiveScan, loadPresets,
+  } = useScannerStore();
   const [filterOpen, setFilterOpen] = useState(false);
 
   // Auto-close filter drawer when scan starts
   useEffect(() => {
     if (isLoading) setFilterOpen(false);
   }, [isLoading]);
+
+  // Reattach to a scan that was running when the page was closed/refreshed,
+  // and pull server-side presets (durable across browsers/origins).
+  useEffect(() => {
+    void resumeActiveScan();
+    void loadPresets();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const detailContent = selectedSpread && (
     <div className="p-3 space-y-3">

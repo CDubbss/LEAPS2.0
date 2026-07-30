@@ -16,6 +16,8 @@ import { TooltipProvider } from "@radix-ui/react-tooltip";
 import { ScannerPage }      from "@/pages/ScannerPage";
 import { OptionsChainPage } from "@/pages/OptionsChainPage";
 import { MLDashboardPage }  from "@/pages/MLDashboardPage";
+import { PositionsPage }    from "@/pages/PositionsPage";
+import { TedPage }          from "@/pages/TedPage";
 import { TopNav }           from "@/components/nav/TopNav";
 import { BottomTabBar }     from "@/components/nav/BottomTabBar";
 import "./index.css";
@@ -35,6 +37,8 @@ function App() {
               <Route path="/"      element={<ScannerPage />}      />
               <Route path="/chain" element={<OptionsChainPage />} />
               <Route path="/ml"    element={<MLDashboardPage />}  />
+              <Route path="/positions" element={<PositionsPage />} />
+              <Route path="/ted" element={<TedPage />} />
             </Routes>
           </div>
 

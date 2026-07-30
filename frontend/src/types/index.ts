@@ -1,7 +1,7 @@
 // TypeScript interfaces mirroring the backend Pydantic models
 
 export type OptionType = "call" | "put";
-export type SpreadType = "bull_call" | "bear_put" | "leap_call" | "leap_put" | "leaps_spread_call" | "earnings_call" | "earnings_put";
+export type SpreadType = "bull_call" | "bear_put" | "leap_call" | "leap_put" | "leaps_spread_call" | "leaps_spread_put" | "earnings_call" | "earnings_put";
 
 export interface OptionQuote {
   symbol: string;
@@ -195,12 +195,12 @@ export const DEFAULT_FILTERS: ScannerFilters = {
   leaps_min_dte: 365,
   leaps_max_dte: 730,
   min_iv_rank: 10,
-  max_iv_rank: 70,
+  max_iv_rank: 95,
   min_iv: 0.0,
   max_iv: 1.0,
-  min_volume: 100,
-  min_open_interest: 500,
-  max_bid_ask_spread_pct: 0.50,
+  min_volume: 10,
+  min_open_interest: 50,
+  max_bid_ask_spread_pct: 0.25,
   min_fundamental_score: 0,
   min_sentiment_score: 0,
   min_probability_of_profit: 0.0,
@@ -209,10 +209,10 @@ export const DEFAULT_FILTERS: ScannerFilters = {
   max_results_per_symbol: 3,
   target_spread_widths: [],
   max_spread_width: null,
-  max_debit_pct_of_spread: 0.80,
+  max_debit_pct_of_spread: 0.25,
   max_net_debit: null,
   min_long_delta: 0.0,
-  max_long_delta: 1.0,
+  max_long_delta: 0.33,
   index_groups: ["nasdaq_100"],
   earnings_play: false,
   earnings_min_days: 15,
@@ -225,6 +225,7 @@ export const SPREAD_TYPE_LABELS: Record<SpreadType, string> = {
   leap_call: "LEAPS Call",
   leap_put: "LEAPS Put",
   leaps_spread_call: "LEAPS Spread Call",
+  leaps_spread_put: "LEAPS Spread Put",
   earnings_call: "Earnings Call",
   earnings_put: "Earnings Put",
 };
