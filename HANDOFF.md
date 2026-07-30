@@ -161,11 +161,67 @@ Strategy-**FIT** badge (25% cost, |delta| ≤ 0.33, OI ≥ 50, vol ≥ 10, bid-a
 3. **Wait for maturity** — the current model's first honest verdict arrives when July rows hit 60d+ labels (~September). Retrain weekly meanwhile; don't over-read weekly MSE wiggles.
 4. **Keep collecting bear + regime data** — both unevaluable until a regime shift or ~1,000 decided bear outcomes.
 5. Deferred ideas: EV-based ranking (rank by expected annualized return per dollar risked), P(touch +50%) first-passage math to replace the Black-Scholes PoP, market-regime entry gate, position sizing guidance, exit-by alerts.
-6. **Paid historical options data** (ORATS / Polygon / CBOE DataShop, one-time pull ~$30–200) — the only way to obtain 2022 bear-market regime data. Do this *after* the schema settles so the backfill only happens once. Backfilled rows would carry price/vol/structure features only (no historical FinBERT sentiment).
+6. **Patch Tier 1 dependencies** (§7) — 7 non-breaking upgrades; leave starlette/FastAPI for a deliberate coordinated bump.
+7. **Paid historical options data** (ORATS / Polygon / CBOE DataShop, one-time pull ~$30–200) — the only way to obtain 2022 bear-market regime data. Do this *after* the schema settles so the backfill only happens once. Backfilled rows would carry price/vol/structure features only (no historical FinBERT sentiment).
 
 ---
 
-## 7. How to use this model today (the honest version)
+## 7. Dependency security triage (2026-07-30)
+
+GitHub reported **66 Dependabot alerts on `main`** (25 high / 36 moderate / 5 low). `main` is stale since 2026-06-18. Local audit of the current branch found **51 Python (20 packages) + 13 npm = 64** — consistent.
+
+Reproduce:
+```bash
+backend\.venv\Scripts\python.exe -m pip_audit --progress-spinner off
+cd frontend && npm audit                # all
+cd frontend && npm audit --omit=dev     # only what ships to the browser
+```
+
+### Exposure context (read before prioritising)
+- **`start.bat` launches uvicorn with `--port 8001` and NO `--host`**, so it binds **127.0.0.1 — localhost only**. `APP_HOST=0.0.0.0` in `.env` is *not used* by start.bat: misleading, currently harmless.
+- `REVIEW_PASSWORD` is empty → `BasicAuthMiddleware` is **not** enabled (`main.py` only adds it when the value is truthy).
+- **If the app is ever exposed** — launched with `--host 0.0.0.0`, or fronted by the cloudflared tunnel referenced in `.gitignore` — every Tier 1 item below jumps in severity and `REVIEW_PASSWORD` should be set *first*.
+
+### Tier 1 — reachable at runtime, patch first
+| Package | Now | Fix | Why it matters |
+|---|---|---|---|
+| `starlette` | 0.52.1 | 1.3.1 | 6 advisories; every HTTP request passes through it. **Major version jump — needs a coordinated FastAPI bump + test pass. Do NOT bump blindly.** |
+| `cryptography` | 46.0.5 | 46.0.7 (48.0.1 for GHSA-537c) | 5 advisories; Fernet token encryption + TLS |
+| `urllib3` | 2.6.3 | 2.7.0 | 3 advisories; all outbound HTTP (FMP / yfinance / Schwab) |
+| `requests` | 2.32.5 | 2.33.0 | outbound HTTP |
+| `idna` | 3.11 | 3.15 | domain parsing in the requests path |
+| `curl-cffi` | 0.13.0 | 0.15.0 | yfinance's HTTP transport |
+| `authlib` | 1.6.9 | 1.6.12 | 4 advisories; Schwab OAuth flow |
+| `axios` (npm) | direct dep | `npm audit fix` | 3 high; ships to the browser, used by `api/client.ts` |
+
+### Tier 2 — present but not reachable in this app
+- **`python-multipart` (5 advisories)** — FastAPI form/multipart parsing. Every endpoint here is JSON; no multipart routes exist. Not reachable.
+- **`ujson` (5)** — transitive; verified **not imported** anywhere in `backend/`.
+- **`react-router` / `react-router-dom` (moderate)** — open-redirect / XSS. The app has no user-supplied URLs or redirect targets.
+- **`transformers` (3)** — loads one pinned public model (ProsusAI/finbert) from the local HF cache; no untrusted model input.
+- **`lodash`, `form-data`, `follow-redirects`** — transitive prod deps not used directly.
+
+### Tier 3 — dev / build-time only (not shipped, not in the running app)
+`vite` (high — dev-server arbitrary file read / path traversal; only while `npm run dev` is up on 5173, and only exploitable by a LAN attacker or a malicious page hitting localhost), `postcss`, `@babel/core`, `brace-expansion`, `picomatch`, `js-yaml`, `flatted`, `pip`, `setuptools`, `pytest`, `pygments`, `click`, `mako`, `msgpack`, `python-dotenv`, `pydantic-settings`, `soupsieve`.
+
+**npm split: 13 total, but only 6 are production** (3 high / 3 moderate) — the other 7 are build tooling.
+
+### Suggested remediation order
+1. **Non-breaking patches in one pass**, then re-run tests:
+   ```bash
+   backend\.venv\Scripts\python.exe -m pip install -U cryptography urllib3 requests idna curl-cffi authlib
+   cd frontend && npm audit fix
+   ```
+   Then: `backend\.venv\Scripts\python.exe -m pytest backend/tests/ -q` and a smoke scan.
+2. **Pin the new versions in `backend/requirements.txt`** — otherwise a fresh venv reintroduces them.
+3. **starlette + FastAPI as a separate, deliberate upgrade** with a full scan + Ted + positions regression pass.
+4. Dev-tooling (Tier 3) whenever convenient; `vite` is the only one worth doing soon.
+
+**Not yet done** — this is triage only; no packages were upgraded.
+
+---
+
+## 8. How to use this model today (the honest version)
 
 **It is a screening and discipline tool, not an oracle.**
 
