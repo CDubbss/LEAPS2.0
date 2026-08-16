@@ -29,6 +29,8 @@ _PROJECT_ROOT = Path(__file__).parent.parent.parent
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
+from backend.data.market_calendar import market_closed_reason  # noqa: E402
+
 LOG_DIR = _PROJECT_ROOT / "logs" / "scheduled_scans"
 DEFAULT_CONFIG = _PROJECT_ROOT / "backend" / "scripts" / "scan_config.json"
 
@@ -198,6 +200,13 @@ def main() -> None:
         action="store_true",
         help="Print resolved filters and exit without scanning.",
     )
+    parser.add_argument(
+        "--allow-market-closed",
+        action="store_true",
+        help="Run even when the options market is closed (weekend or NYSE "
+             "holiday). Rows logged this way carry stale quotes and are "
+             "flagged market_closed=1.",
+    )
     args = parser.parse_args()
 
     log_file = _setup_logging()
@@ -205,6 +214,26 @@ def main() -> None:
     logger.info("Scheduled scan — %s", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
     logger.info("Log file: %s", log_file)
     logger.info("=" * 60)
+
+    # yfinance still answers when the NYSE is shut — it serves the previous
+    # session's closing chain. Scanning then logs real quotes under the wrong
+    # entry_date, usually duplicating the prior trading day. Exit before doing
+    # any work rather than logging rows that have to be excluded later.
+    # Exit 0: a skipped non-trading day is the expected outcome, not a failure.
+    now = datetime.now()
+    closed = market_closed_reason(now.date())
+    if closed and not args.allow_market_closed:
+        logger.info(
+            "Market closed — %s (%s). Skipping scan. "
+            "Use --allow-market-closed to override.",
+            closed, now.strftime("%A %Y-%m-%d"),
+        )
+        sys.exit(0)
+    if closed:
+        logger.warning(
+            "Market closed (%s) but --allow-market-closed set — quotes will be "
+            "stale and rows will be flagged market_closed=1.", closed,
+        )
 
     filters_override = _load_filters(Path(args.config))
 

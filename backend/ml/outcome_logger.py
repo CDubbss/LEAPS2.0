@@ -109,7 +109,14 @@ class OutcomeLogger:
         ]
 
         model_version = _current_model_version()
-        today = date.today().isoformat()
+        _today = date.today()
+        today = _today.isoformat()
+        # yfinance serves the previous session's chain when the NYSE is shut
+        # (weekend or holiday), so those rows carry stale quotes under the
+        # wrong date. Stamp at insert so a manual or overridden run is excluded
+        # from training the same way the backfilled historical rows are.
+        from backend.data.market_calendar import is_market_open
+        market_closed = 0 if is_market_open(_today) else 1
         rows = []
 
         for item, near_miss in to_log:
@@ -179,6 +186,7 @@ class OutcomeLogger:
                 spot,
                 horizon_days,
                 near_miss,
+                market_closed,
             ))
 
         # Write spread candidates first — this is the critical write.
@@ -193,8 +201,8 @@ class OutcomeLogger:
                         scan_id, symbol, spread_type, expiration, entry_date,
                         outcome_score, features_json, contract_json,
                         entry_net_debit, long_mid_at_entry, short_mid_at_entry,
-                        spot_at_entry, horizon_days, near_miss
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        spot_at_entry, horizon_days, near_miss, market_closed
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     rows,
                 )
@@ -267,7 +275,10 @@ class OutcomeLogger:
                 current_value   REAL,           -- spread mid at snapshot
                 pnl_pct         REAL,           -- (current - entry) / entry * 100
                 outcome_score   REAL,           -- normalized pnl 0-100
-                data_quality    TEXT DEFAULT 'ok',  -- 'ok' | 'clamped' | 'illiquid'
+                -- 'ok' | 'clamped'. Provenance columns (raw_value, per-leg
+                -- bid/ask/source, price_provider) and the snapshot_rejections
+                -- table are added by label_outcomes._migrate().
+                data_quality    TEXT DEFAULT 'ok',
                 fetched_at      TEXT DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE (outcome_id, days_since_entry)
             )

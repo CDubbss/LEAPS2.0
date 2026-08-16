@@ -50,11 +50,15 @@ def load_data(db_path: str, since: str | None) -> tuple[pd.DataFrame, pd.DataFra
     conn.execute("PRAGMA query_only=1")
     try:
         outcomes = pd.read_sql(
+            # market_closed rows are the prior session's chain stamped with a
+            # non-trading entry_date; excluded so scan-day grouping reflects
+            # real trading sessions.
             "SELECT id, entry_date, expiration, symbol, spread_type, "
             "       outcome_score, label_source, peak_pnl_pct, strategy_result, "
             "       days_to_target, entry_net_debit, features_json "
             "FROM spread_outcomes "
-            "WHERE spread_type NOT IN ('earnings_call', 'earnings_put')",
+            "WHERE COALESCE(market_closed, 0) = 0 "
+            "  AND spread_type NOT IN ('earnings_call', 'earnings_put')",
             conn,
         )
         snapshots = pd.read_sql(

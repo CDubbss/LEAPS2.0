@@ -71,9 +71,13 @@ def load_training_data(db_path: str) -> tuple[np.ndarray, np.ndarray, np.ndarray
     conn = sqlite3.connect(db_path)
     try:
         df = pd.read_sql(
+            # market_closed rows carry the prior session's chain under a
+            # non-trading entry_date — real quotes, wrong date, and often a
+            # near-duplicate that would straddle a CV fold boundary.
             "SELECT features_json, outcome_score, label_source "
             "FROM spread_outcomes "
             "WHERE outcome_score IS NOT NULL "
+            "  AND COALESCE(market_closed, 0) = 0 "
             "  AND spread_type NOT IN ('earnings_call', 'earnings_put')",
             conn,
         )
@@ -212,6 +216,7 @@ def load_strategy_data(db_path: str) -> tuple[np.ndarray, np.ndarray, np.ndarray
             "FROM spread_outcomes "
             "WHERE strategy_result IN ('win', 'loss') "
             "  AND features_json IS NOT NULL "
+            "  AND COALESCE(market_closed, 0) = 0 "
             "  AND spread_type NOT IN ('earnings_call', 'earnings_put')",
             conn,
         )
