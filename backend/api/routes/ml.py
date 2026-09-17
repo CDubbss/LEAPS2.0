@@ -5,6 +5,7 @@ import json
 import os
 import re
 import sqlite3
+import time
 from datetime import date, timedelta
 
 import numpy as np
@@ -422,11 +423,19 @@ async def get_ticker_snapshot_history(
 
 
 _BACKTEST_REPORT_PATH = "backend/ml/artifacts/backtest_report.json"
+_VALIDATION_REPORT_PATH = "backend/ml/artifacts/validation_report.json"
 
 
 @router.get("/backtest-report")
 async def get_backtest_report() -> dict:
-    """Return the latest backtest report JSON artifact."""
+    """Return the latest backtest report, enriched with the validate.py
+    notional-matched (risk-normalized) edge + p-value and a freshness age.
+
+    The backtest's own 1-contract dollar sim scales bet size with the debit
+    (~100x across spreads), so it is NOT the headline number — the dashboard
+    leads with the `validation.notional_edge` / `p_value` attached here, and
+    `report_age_days` lets the UI warn when the artifact is stale (§4.8 / I6).
+    """
     if not os.path.exists(_BACKTEST_REPORT_PATH):
         raise HTTPException(
             status_code=404,
@@ -438,7 +447,37 @@ async def get_backtest_report() -> dict:
 
     def _read() -> dict:
         with open(_BACKTEST_REPORT_PATH) as f:
-            return json.load(f)
+            report = json.load(f)
+
+        report["report_age_days"] = round(
+            (time.time() - os.path.getmtime(_BACKTEST_REPORT_PATH)) / 86400, 1
+        )
+
+        # Attach the risk-normalized edge from validate.py — the trustworthy
+        # significance test. Optional: fall back to the 1-contract sim if absent.
+        if os.path.exists(_VALIDATION_REPORT_PATH):
+            try:
+                with open(_VALIDATION_REPORT_PATH) as vf:
+                    v = json.load(vf)
+                sections = v.get("sections") or {}
+                h1 = (sections.get("honest") or {}).get("H1_notional_matched") or {}
+                n1 = (sections.get("negative_controls") or {}).get("N1_within_day_shuffle") or {}
+                report["validation"] = {
+                    "notional_edge": h1.get("edge"),
+                    "p_value": h1.get("p_value"),
+                    "z": h1.get("z"),
+                    "n_trades": (h1.get("model") or {}).get("n_trades"),
+                    "shuffle_control_z": n1.get("z"),
+                    "counts": v.get("counts"),
+                    "generated_at": v.get("generated_at"),
+                    "age_days": round(
+                        (time.time() - os.path.getmtime(_VALIDATION_REPORT_PATH)) / 86400, 1
+                    ),
+                }
+            except Exception:
+                pass  # validation report optional; UI falls back to the sim edge
+
+        return report
 
     return await asyncio.to_thread(_read)
 

@@ -51,6 +51,15 @@ type BacktestReport = {
       mean_win_rate: number | null;
     };
   };
+  report_age_days?: number;
+  validation?: {
+    notional_edge: number | null;
+    p_value: number | null;
+    z: number | null;
+    n_trades: number | null;
+    shuffle_control_z: number | null;
+    age_days: number | null;
+  } | null;
 };
 
 const dollars = (v: number) =>
@@ -87,6 +96,9 @@ export function BacktestReportSection() {
 
   const sim = report.simulation;
   const edge = sim.model.total_pnl - sim.random_baseline.mean_total_pnl;
+  const val = report.validation ?? null;
+  const hasNotional = val != null && val.notional_edge != null;
+  const stale = (report.report_age_days ?? 0) > 7;
   const horizons = Object.keys(report.hit_rates).sort(
     (a, b) => Number(a) - Number(b)
   );
@@ -110,10 +122,17 @@ export function BacktestReportSection() {
             (out-of-sample, scan-time scores)
           </span>
         </h2>
-        <span className="text-[10px] text-gray-500">
-          generated {report.generated_at}
-          {report.since ? ` · since ${report.since}` : " · all data"} ·{" "}
-          {report.n_labeled.toLocaleString()} labeled rows
+        <span className="text-[10px] text-gray-500 flex items-center gap-2">
+          {stale && (
+            <span className="px-1.5 py-0.5 rounded bg-amber-900/50 text-amber-300 border border-amber-700/60 font-medium">
+              ⚠ {report.report_age_days}d old — regenerate
+            </span>
+          )}
+          <span>
+            generated {report.generated_at}
+            {report.since ? ` · since ${report.since}` : " · all data"} ·{" "}
+            {report.n_labeled.toLocaleString()} labeled rows
+          </span>
         </span>
       </div>
 
@@ -121,17 +140,37 @@ export function BacktestReportSection() {
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
         <div className="bg-gray-900/60 rounded p-3">
           <div className="text-[10px] text-gray-400 uppercase tracking-wide">
-            Edge vs Random
+            Edge vs Random{" "}
+            <span className="text-gray-600 normal-case">
+              {hasNotional ? "· risk-normalized" : "· 1-contract"}
+            </span>
           </div>
-          <div
-            className={`text-xl font-bold ${edge >= 0 ? "text-green-400" : "text-red-400"}`}
-          >
-            {edge >= 0 ? "+" : ""}
-            {dollars(edge)}
-          </div>
-          <div className="text-[10px] text-gray-500">
-            top-{sim.top_k}/day sim, {sim.model.n_trades} trades
-          </div>
+          {hasNotional ? (
+            <>
+              <div
+                className={`text-xl font-bold ${(val!.notional_edge ?? 0) >= 0 ? "text-green-400" : "text-red-400"}`}
+              >
+                {(val!.notional_edge ?? 0) >= 0 ? "+" : ""}
+                {dollars(val!.notional_edge ?? 0)}
+              </div>
+              <div className="text-[10px] text-gray-500">
+                notional-matched{val!.p_value != null ? ` · p=${val!.p_value}` : ""} ·{" "}
+                {val!.n_trades ?? sim.model.n_trades} trades
+              </div>
+            </>
+          ) : (
+            <>
+              <div
+                className={`text-xl font-bold ${edge >= 0 ? "text-green-400" : "text-red-400"}`}
+              >
+                {edge >= 0 ? "+" : ""}
+                {dollars(edge)}
+              </div>
+              <div className="text-[10px] text-gray-500">
+                1-contract sim · {sim.model.n_trades} trades · run validate.py for the p-value
+              </div>
+            </>
+          )}
         </div>
         <div className="bg-gray-900/60 rounded p-3">
           <div className="text-[10px] text-gray-400 uppercase tracking-wide">
@@ -256,6 +295,17 @@ export function BacktestReportSection() {
       )}
 
       <p className="text-[10px] text-gray-600">
+        {hasNotional && (
+          <>
+            Headline edge is the{" "}
+            <span className="text-gray-500">risk-normalized (notional-matched)</span>{" "}
+            figure from validate.py
+            {val!.shuffle_control_z != null &&
+              ` · within-day score-shuffle control z=${val!.shuffle_control_z} (≈0 = the harness isn't fooling itself)`}
+            {` · the raw 1-contract sim shows ${edge >= 0 ? "+" : ""}${dollars(edge)} but scales bet size with debit (~100×), so it is illustrative only`}
+            .{" "}
+          </>
+        )}
         Scores are ordinal, not calibrated — trust the ranking, not the
         absolute number. Mature label tiers (60d+) carry the real signal;
         young rows only have noisy short-horizon labels.

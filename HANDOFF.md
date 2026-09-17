@@ -282,7 +282,7 @@ Thresholds are declared in a `THRESHOLDS` dict at the top of the file and printe
 **Do not depend on `LeapsCouncil` for validation** — it is not under version control, has no `.env`, and its duplicated `FEATURE_NAMES` is 23 entries against the current 27.
 
 ### ML Dashboard — `/ml` (`MLDashboardPage.tsx`)
-Model status, DB stats, outcome-score distribution, snapshot coverage, scan activity feed, **backtest report section** (`BacktestReportSection.tsx` ← `GET /api/v1/ml/backtest-report`, subject to §4.1 caveats), and a pipeline command reference.
+Model status, DB stats, outcome-score distribution, snapshot coverage, scan activity feed, **backtest report section** (`BacktestReportSection.tsx` ← `GET /api/v1/ml/backtest-report`, subject to §4.1 caveats), and a pipeline command reference. As of 2026-09-17 the endpoint merges in validate.py's **notional-matched edge + p-value** and a freshness age, so the dashboard headlines the risk-normalized figure ($156,398, p=0.0001) with a "stale — regenerate" badge; the 1-contract sim is labeled illustrative (§9 #2).
 
 ### Options Chain — `/chain`
 Chain viewer with sticky strike column and ATM highlighting.
@@ -358,7 +358,7 @@ Chain viewer with sticky strike column and ATM highlighting.
 
 **2026-09-16 — clamped purge executed + clean retrain + Positions fix.** Backed up the DB, ran `--repair-clamped` (nulled 21,701 snapshots, reset ~78k labels/verdicts), re-labeled from clean snapshots (win rate 33.6% → 35.5%), and retrained both models on the clean population (ranker MSE 187.8/63,325; classifier **AUC 0.880**/21,052, win 36.5%). Fixed the Positions pricer to broker-style mid-to-mid (§5).
 
-**2026-09-17 — clean-model validation.** Fresh backtest + `validate.py`: **11 PASS · 3 FAIL · 3 WARN**; notional-matched edge **+$156,398, p=0.0001, z=+22.2** (strongest yet); N1 shuffle clean (z=−0.23); interim_45d rank-corr flipped positive; top decile near-calibrated (gap −1.0). Confirmed the clamps had been *depressing* the model (AUC rose post-purge). Remaining FAILs (H3/H4b/I2) are structural, not clamp-related. Surfaced §4.9 (fundamentals ~98% NaN in recent rows).
+**2026-09-17 — clean-model validation.** Fresh backtest + `validate.py`: **11 PASS · 3 FAIL · 3 WARN**; notional-matched edge **+$156,398, p=0.0001, z=+22.2** (strongest yet); N1 shuffle clean (z=−0.23); interim_45d rank-corr flipped positive; top decile near-calibrated (gap −1.0). Confirmed the clamps had been *depressing* the model (AUC rose post-purge). Remaining FAILs (H3/H4b/I2) are structural, not clamp-related. Surfaced §4.9 (fundamentals ~98% NaN in recent rows). Committed the accumulated work (`9d90d59`), then closed §9 #2: the `/backtest-report` endpoint now merges validate.py's notional-matched edge + p-value + freshness, and `BacktestReportSection.tsx` headlines the honest number with a staleness badge (the 1-contract sim is demoted to "illustrative").
 
 ---
 
@@ -420,7 +420,7 @@ cd frontend && npm audit --omit=dev     # only what ships to the browser
 ## 9. Next steps
 
 1. **~~Purge legacy clamped snapshots and re-label~~ — DONE 2026-09-16** (§4.7, §7). Purged, re-labeled, retrained, validated: win rate 33.6% → 35.5%, AUC 0.856 → 0.880, edge $142k → $156k. Remaining ML-data work is now item 4 (era segmentation) and the dead `sector_relative_strength` feature (I2), plus §4.9 (fundamentals NaN).
-2. **Fix the ML dashboard's edge figure** (§4.8) — `BacktestReportSection.tsx` still reads a **static on-disk JSON with no freshness check** (I6 re-fails the moment new data or a model lands), and renders the 1-contract statistic — now **+2.63σ** on clean data (finally significant, but still the wrong units) — while never showing the sigma, baseline std, or trade counts. Either regenerate on read or surface the notional-matched number ($156,398, p=0.0001) instead. *The number shown to the user still misrepresents the evidence.*
+2. **~~Fix the ML dashboard's edge figure~~ — DONE 2026-09-17.** `/api/v1/ml/backtest-report` now merges in validate.py's **notional-matched edge + p-value** (read from `validation_report.json` → `sections.honest.H1_notional_matched`) plus the within-day shuffle-control z and a `report_age_days`. `BacktestReportSection.tsx` headlines the **risk-normalized** figure ($156,398, p=0.0001), demotes the 1-contract sim to an explicitly-labeled *"illustrative — debit-scaled ~100×"* line, and shows an amber **"stale — regenerate"** badge when the report is >7 days old. Frontend rebuilt so it ships on :8001 after a restart. *(Still a static artifact — the badge surfaces staleness rather than auto-regenerating; a regenerate-on-read endpoint remains a possible follow-up.)*
 3. **Gate on quote staleness** (§5) — `last_trade` is already recorded on every snapshot from yfinance's `lastTradeDate`; nothing reads it yet. Rejecting quotes older than a threshold is the natural follow-on to atomic pair pricing and needs no new data.
 4. **Fix `backtest.py` era segmentation** (§4.1) — makes every report section as trustworthy as the simulation already is. *Offered, awaiting user decision.*
 5. **Open a PR** for `feat/ted-positions-data-bolstering` → `main`, or merge it. 6 weeks of work sits on the branch.
