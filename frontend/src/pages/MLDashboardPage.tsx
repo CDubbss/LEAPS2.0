@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   BarChart,
   Bar,
@@ -55,10 +55,18 @@ const TOOLTIP_STYLE = {
 
 const SNAPSHOT_DAYS = [7, 14, 21, 30, 45, 60, 90];
 
-const LINE_COLORS = [
-  "#0ea5e9", "#22c55e", "#f59e0b", "#818cf8",
-  "#f43f5e", "#06b6d4", "#84cc16", "#e879f9",
-];
+// Gain vs loss is carried by line STYLE (solid = gainer, dashed = drawdown) plus the
+// signed peak in each legend label — so hue only has to tell the ≤5 lines apart, not
+// encode direction. Palette = the dataviz reference categorical order, validated on the
+// #1f2937 card surface (adjacent pairlist, all checks pass): blue, orange, aqua / yellow, magenta.
+const GAINER_COLORS = ["#3987e5", "#d95926", "#199e70"];
+const DRAWDOWN_COLORS = ["#c98500", "#d55181"];
+
+// Legacy "clamped" snapshots (HANDOFF §4.7) store the floor at exactly −100% and ceilings
+// averaging +274%. Ignore those extremes when RANKING which spreads are most interesting,
+// so one bad quote can't hijack a slot. Drawn values are left untouched.
+const RANK_MIN_PCT = -99.9;
+const RANK_MAX_PCT = 300;
 
 // ─── Ticker Snapshot Chart ────────────────────────────────────────────────────
 
@@ -77,22 +85,76 @@ function TickerSnapshotChart({ tickers }: { tickers: string[] }) {
       .finally(() => setLoading(false));
   }, [selected]);
 
-  if (tickers.length === 0) return null;
+  // Pick the 3 biggest gainers + 2 biggest drawdowns and shape them for recharts.
+  // Hundreds of per-spread lines is unreadable; this shows the up/down envelope instead.
+  const { chartData, lines, yDomain } = useMemo(() => {
+    const scored = spreads
+      .map((s) => {
+        const vals = s.snapshots
+          .filter((sn) => sn.pnl_pct != null)
+          .map((sn) => sn.pnl_pct);
+        // Rank on plausible values only; a trajectory needs ≥2 points to be a line.
+        const rankable = vals.filter((v) => v >= RANK_MIN_PCT && v <= RANK_MAX_PCT);
+        if (vals.length < 2 || rankable.length === 0) return null;
+        return { s, peakGain: Math.max(...rankable), maxDrawdown: Math.min(...rankable) };
+      })
+      .filter((x): x is NonNullable<typeof x> => x !== null);
 
-  // Build chart data: one point per snapshot day, one key per spread entry
-  const lineKeys = spreads.map(
-    (s) =>
-      `${s.entry_date} · ${SPREAD_TYPE_LABELS[s.spread_type] ?? s.spread_type}`
-  );
+    const byGain = [...scored].sort((a, b) => b.peakGain - a.peakGain);
+    const gainers = byGain.slice(0, 3);
+    const gainerIds = new Set(gainers.map((g) => g.s.id));
+    const drawdowns = scored
+      .filter((x) => !gainerIds.has(x.s.id))
+      .sort((a, b) => a.maxDrawdown - b.maxDrawdown)
+      .slice(0, 2);
 
-  const chartData = SNAPSHOT_DAYS.map((day) => {
-    const point: Record<string, number | string> = { day: `Day ${day}` };
-    spreads.forEach((s, i) => {
-      const snap = s.snapshots.find((sn) => sn.days_since_entry === day);
-      if (snap?.pnl_pct != null) point[lineKeys[i]] = snap.pnl_pct;
+    // Backfill toward 5 from the remaining gainers if a bucket came up short.
+    const chosen = [...gainers, ...drawdowns];
+    if (chosen.length < 5) {
+      const have = new Set(chosen.map((c) => c.s.id));
+      for (const x of byGain) {
+        if (chosen.length >= 5) break;
+        if (!have.has(x.s.id)) { chosen.push(x); have.add(x.s.id); }
+      }
+    }
+
+    const drawdownIds = new Set(drawdowns.map((d) => d.s.id));
+    let gi = 0, di = 0;
+    const lines = chosen.map((c) => {
+      const dashed = drawdownIds.has(c.s.id);
+      const peak = dashed ? c.maxDrawdown : c.peakGain;
+      const typeLabel = SPREAD_TYPE_LABELS[c.s.spread_type] ?? c.s.spread_type;
+      const key = `${c.s.entry_date} · ${typeLabel} · ${peak >= 0 ? "+" : ""}${peak.toFixed(0)}%`;
+      const color = dashed
+        ? DRAWDOWN_COLORS[di++ % DRAWDOWN_COLORS.length]
+        : GAINER_COLORS[gi++ % GAINER_COLORS.length];
+      return { id: c.s.id, key, color, dashed };
     });
-    return point;
-  });
+
+    const keyById = new Map(lines.map((l) => [l.id, l.key]));
+    let dataMin = 0, dataMax = 0;
+    const chartData = SNAPSHOT_DAYS.map((day) => {
+      const point: Record<string, number | string> = { day: `Day ${day}` };
+      for (const c of chosen) {
+        const snap = c.s.snapshots.find((sn) => sn.days_since_entry === day);
+        if (snap?.pnl_pct != null) {
+          point[keyById.get(c.s.id)!] = snap.pnl_pct;
+          dataMin = Math.min(dataMin, snap.pnl_pct);
+          dataMax = Math.max(dataMax, snap.pnl_pct);
+        }
+      }
+      return point;
+    });
+
+    // Always keep the ±50% exit lines in frame, with a little headroom.
+    const yDomain: [number, number] = [
+      Math.min(dataMin, -60),
+      Math.max(dataMax, 60),
+    ];
+    return { chartData, lines, yDomain };
+  }, [spreads]);
+
+  if (tickers.length === 0) return null;
 
   return (
     <div className="bg-gray-800 rounded-lg p-4">
@@ -111,8 +173,8 @@ function TickerSnapshotChart({ tickers }: { tickers: string[] }) {
         </select>
       </div>
       <p className="text-xs text-gray-500 mb-4">
-        P&amp;L % at each tracking interval for all logged {selected} spreads.
-        Each line = one spread entry.
+        The 3 biggest gains (solid) and 2 biggest drawdowns (dashed) of {spreads.length}{" "}
+        logged {selected} spreads. Dashed lines at ±50% mark the exit thresholds.
       </p>
 
       {loading ? (
@@ -120,12 +182,12 @@ function TickerSnapshotChart({ tickers }: { tickers: string[] }) {
           <RefreshCw size={14} className="animate-spin mr-2" />
           Loading…
         </div>
-      ) : spreads.length === 0 ? (
+      ) : lines.length === 0 ? (
         <div className="h-48 flex items-center justify-center text-gray-600 text-sm">
           No snapshot data for {selected}.
         </div>
       ) : (
-        <ResponsiveContainer width="100%" height={220}>
+        <ResponsiveContainer width="100%" height={260}>
           <LineChart data={chartData} margin={{ top: 4, right: 8, bottom: 4, left: 0 }}>
             <XAxis
               dataKey="day"
@@ -137,10 +199,23 @@ function TickerSnapshotChart({ tickers }: { tickers: string[] }) {
               tick={{ fill: "#6b7280", fontSize: 10 }}
               axisLine={false}
               tickLine={false}
-              width={38}
+              width={44}
+              domain={yDomain}
               tickFormatter={(v) => `${v > 0 ? "+" : ""}${v}%`}
             />
             <ReferenceLine y={0} stroke="#374151" strokeDasharray="3 3" />
+            <ReferenceLine
+              y={50}
+              stroke="#34d399"
+              strokeDasharray="5 4"
+              label={{ value: "+50% target", position: "insideTopLeft", fill: "#34d399", fontSize: 9 }}
+            />
+            <ReferenceLine
+              y={-50}
+              stroke="#fb7185"
+              strokeDasharray="5 4"
+              label={{ value: "−50% stop", position: "insideBottomLeft", fill: "#fb7185", fontSize: 9 }}
+            />
             <Tooltip
               contentStyle={TOOLTIP_STYLE}
               formatter={(v: number, name: string) => [
@@ -151,15 +226,19 @@ function TickerSnapshotChart({ tickers }: { tickers: string[] }) {
             <Legend
               wrapperStyle={{ fontSize: "10px", color: "#9ca3af", paddingTop: "8px" }}
             />
-            {lineKeys.map((key, i) => (
+            {lines.map((ln) => (
               <Line
-                key={key}
+                key={ln.key}
                 type="monotone"
-                dataKey={key}
-                stroke={LINE_COLORS[i % LINE_COLORS.length]}
-                strokeWidth={1.5}
-                dot={{ r: 3, strokeWidth: 0 }}
+                dataKey={ln.key}
+                stroke={ln.color}
+                strokeWidth={2}
+                strokeDasharray={ln.dashed ? "5 4" : undefined}
+                dot={{ r: 2.5, strokeWidth: 0 }}
                 connectNulls
+                // recharts' draw-in animation overrides stroke-dasharray, which would
+                // erase the dashed styling that distinguishes drawdowns from gainers.
+                isAnimationActive={false}
               />
             ))}
           </LineChart>
@@ -865,7 +944,9 @@ export function MLDashboardPage() {
                   tick={{ fill: "#6b7280", fontSize: 10 }}
                   axisLine={false}
                   tickLine={false}
-                  width={28}
+                  width={44}
+                  allowDecimals={false}
+                  tickFormatter={(v) => (v >= 1000 ? `${v / 1000}k` : `${v}`)}
                 />
                 <Tooltip
                   contentStyle={TOOLTIP_STYLE}
@@ -943,7 +1024,9 @@ export function MLDashboardPage() {
                   tick={{ fill: "#6b7280", fontSize: 10 }}
                   axisLine={false}
                   tickLine={false}
-                  width={28}
+                  width={44}
+                  allowDecimals={false}
+                  tickFormatter={(v) => (v >= 1000 ? `${v / 1000}k` : `${v}`)}
                 />
                 <Tooltip
                   contentStyle={TOOLTIP_STYLE}

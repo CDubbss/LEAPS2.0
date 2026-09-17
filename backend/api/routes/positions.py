@@ -1,6 +1,6 @@
 """
 Positions tracker API — CRUD for spreads the user has actually entered,
-with live mark-to-market pricing against the +50% target / -25% stop rules.
+with live mark-to-market pricing against the +50% target / -50% stop rules.
 
 Routes are synchronous `def` on purpose: FastAPI runs them in a threadpool,
 which is required because the yfinance pricing calls block.
@@ -147,10 +147,11 @@ def _lenient_option_mid(
     option_type: str,
 ) -> Optional[float]:
     """
-    Option mid for position valuation. Unlike the labeler's fetcher, this does
-    NOT reject wide markets — the user owns the position and a rough mark beats
-    a blank. Clean quote → mid; wide quote (>50% of ask) → last trade if
-    available; no bid/ask at all → last trade.
+    Broker-style mark for position valuation. A two-sided quote is marked at the
+    mid — even on wide markets — to match a broker's mark and avoid mixing a stale
+    last-trade on one leg with a live mid on the other (the §4.7 per-leg-sourcing
+    bug). Last trade is used only when a leg has no two-sided market at all; a rough
+    mark still beats a blank for a position the user owns.
     """
     try:
         chain = provider._get_chain(underlying, expiry)
@@ -165,10 +166,14 @@ def _lenient_option_mid(
             if col in match.columns:
                 last = float(match[col].iloc[0]) or 0.0
                 break
+        # Broker-style mark: a two-sided quote is marked at the MID, always —
+        # even on wide markets. The old ">50% wide -> last-trade" fallback mixed a
+        # stale trade print on one leg with a live mid on the other and inflated the
+        # spread mark (the same per-leg-sourcing bug the labeler hit in §4.7; e.g.
+        # NFLX 230/245C showed +60% off a stale 0.89 long print vs the 0.14 mid mark).
+        # Brokers mark two-sided legs at the mid regardless of width; the last trade
+        # is used only when a leg has no two-sided market at all.
         if bid > 0 and ask >= bid:
-            wide = (ask - bid) / ask > 0.50
-            if wide and last > 0:
-                return last
             return (bid + ask) / 2.0
         return last if last > 0 else None
     except Exception as e:

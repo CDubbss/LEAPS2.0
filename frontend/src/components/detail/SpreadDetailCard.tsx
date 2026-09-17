@@ -205,14 +205,14 @@ const LegRow: React.FC<{ option: import("@/types").OptionQuote; label: string }>
         <span className="text-gray-500 text-xs">per share</span>
       </span>
     </div>
-    <div className="grid grid-cols-2 gap-x-2 gap-y-1 text-gray-400 lg:grid-cols-4">
-      <span className="overflow-hidden truncate">IV <InfoTooltip content={TOOLTIPS.iv_pct} />: {formatIV(option.implied_volatility)}</span>
-      <span className="overflow-hidden truncate">Δ <InfoTooltip content={TOOLTIPS.delta} />: {formatGreek(option.delta)}</span>
-      <span className="overflow-hidden truncate">Γ <InfoTooltip content={TOOLTIPS.gamma} />: {formatGreek(option.gamma, 5)}</span>
-      <span className="overflow-hidden truncate">Θ <InfoTooltip content={TOOLTIPS.theta} />: {formatGreek(option.theta)}</span>
-      <span className="overflow-hidden truncate">Vol: {option.volume.toLocaleString()}</span>
-      <span className="overflow-hidden truncate">OI: {option.open_interest.toLocaleString()}</span>
-      <span className="overflow-hidden truncate">ν <InfoTooltip content={TOOLTIPS.vega} />: {formatGreek(option.vega)}</span>
+    <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-gray-400">
+      <span>IV <InfoTooltip content={TOOLTIPS.iv_pct} />: {formatIV(option.implied_volatility)}</span>
+      <span>Δ <InfoTooltip content={TOOLTIPS.delta} />: {formatGreek(option.delta, 2)}</span>
+      <span>Γ <InfoTooltip content={TOOLTIPS.gamma} />: {formatGreek(option.gamma, 4)}</span>
+      <span>Θ <InfoTooltip content={TOOLTIPS.theta} />: {formatGreek(option.theta, 3)}</span>
+      <span>Vol: {option.volume.toLocaleString()}</span>
+      <span>OI: {option.open_interest.toLocaleString()}</span>
+      <span>ν <InfoTooltip content={TOOLTIPS.vega} />: {formatGreek(option.vega, 2)}</span>
     </div>
   </div>
 );

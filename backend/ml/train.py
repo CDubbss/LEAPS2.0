@@ -13,6 +13,7 @@ After options expire, outcomes are labeled by the log_outcome.py script.
 """
 
 import argparse
+import gc
 import glob
 import json
 import logging
@@ -29,6 +30,13 @@ import pandas as pd
 from sklearn.model_selection import TimeSeriesSplit
 from sklearn.pipeline import Pipeline
 from xgboost import XGBClassifier, XGBRegressor
+from xgboost.core import XGBoostError
+
+# A single trial can fail transiently under system memory pressure (XGBoost raises
+# XGBoostError('bad allocation') when the OS commit limit is momentarily hit — not a
+# data/code bug). These are passed to study.optimize(catch=...) so one bad trial is
+# marked failed and the search continues instead of aborting the whole run.
+TRIAL_CATCH = (MemoryError, XGBoostError)
 
 from backend.ml.features import FEATURE_NAMES
 
@@ -138,7 +146,9 @@ def objective(trial: optuna.Trial, X: np.ndarray, y: np.ndarray, w: np.ndarray) 
         # Weighted MSE: expiry-labeled val rows penalise errors more
         mse = float(np.average((preds - y_val) ** 2, weights=w_val))
         mse_scores.append(mse)
+        del pipeline, preds
 
+    gc.collect()  # release XGBoost native handles between trials
     return float(np.mean(mse_scores))
 
 
@@ -160,6 +170,7 @@ def train(db_path: str, n_trials: int = 50) -> None:
         lambda trial: objective(trial, X, y, w),
         n_trials=n_trials,
         show_progress_bar=True,
+        catch=TRIAL_CATCH,
     )
 
     best_params = study.best_params
@@ -282,7 +293,9 @@ def strategy_objective(trial: optuna.Trial, X: np.ndarray, y: np.ndarray, w: np.
         pipeline.fit(X_train, y_train, xgb__sample_weight=w_train)
         proba = pipeline.predict_proba(X_val)[:, 1]
         auc_scores.append(roc_auc_score(y_val, proba, sample_weight=w[val_idx]))
+        del pipeline, proba
 
+    gc.collect()  # release XGBoost native handles between trials
     return -float(np.mean(auc_scores)) if auc_scores else 0.0
 
 
@@ -300,6 +313,7 @@ def train_strategy(db_path: str, n_trials: int = 50) -> None:
         lambda trial: strategy_objective(trial, X, y, w),
         n_trials=n_trials,
         show_progress_bar=True,
+        catch=TRIAL_CATCH,
     )
 
     best_params = study.best_params

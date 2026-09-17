@@ -6,6 +6,64 @@ import { DEFAULT_FILTERS } from "@/types";
 
 const POLL_INTERVAL_MS = 3000;
 
+// ─── Results-table columns ────────────────────────────────────────────────────
+// Canonical column order (superset). The first block is visible by default; the
+// rest are opt-in via the column picker. Column *definitions* live in ResultsTable
+// keyed by these same ids — this file only owns the order/visibility so it can be
+// persisted. Ids are append-only; renaming one just drops it from a saved layout
+// (reconcileOrder handles it), never corrupts the table.
+export const DEFAULT_COLUMN_ORDER: string[] = [
+  "rank", "ticker", "strategy", "fit", "expiry", "dte", "iv_rank", "pop",
+  "ml_score", "risk_score", "net_debit", "max_profit", "earnings",
+  // opt-in extras (hidden by default)
+  "breakeven", "spread_width", "max_loss", "bid_ask_quality", "expected_return",
+  "confidence", "fundamental", "sentiment", "delta", "oi", "volume", "sector",
+];
+
+const DEFAULT_VISIBLE_COLUMNS = new Set([
+  "rank", "ticker", "strategy", "fit", "expiry", "dte", "iv_rank", "pop",
+  "ml_score", "risk_score", "net_debit", "max_profit", "earnings",
+]);
+
+export const DEFAULT_COLUMN_VISIBILITY: Record<string, boolean> = Object.fromEntries(
+  DEFAULT_COLUMN_ORDER.map((id) => [id, DEFAULT_VISIBLE_COLUMNS.has(id)])
+);
+
+// Detail-panel cards, in default stacking order. Ids match the registry in ScannerPage.
+export const DEFAULT_CARD_ORDER: string[] = [
+  "spread", "ml", "sentiment", "risk", "fundamentals",
+];
+
+/** Keep only known ids (in persisted order), then append any defaults that are
+ *  missing — so a stale/renamed layout can never drop or duplicate a column/card. */
+function reconcileOrder(persisted: unknown, defaults: string[]): string[] {
+  const allowed = new Set(defaults);
+  const out: string[] = [];
+  const seen = new Set<string>();
+  if (Array.isArray(persisted)) {
+    for (const id of persisted) {
+      if (typeof id === "string" && allowed.has(id) && !seen.has(id)) {
+        out.push(id);
+        seen.add(id);
+      }
+    }
+  }
+  for (const id of defaults) if (!seen.has(id)) out.push(id);
+  return out;
+}
+
+function reconcileVisibility(
+  persisted: unknown,
+  defaults: Record<string, boolean>
+): Record<string, boolean> {
+  const p = persisted && typeof persisted === "object" ? (persisted as Record<string, unknown>) : {};
+  const out: Record<string, boolean> = {};
+  for (const id of Object.keys(defaults)) {
+    out[id] = typeof p[id] === "boolean" ? (p[id] as boolean) : defaults[id];
+  }
+  return out;
+}
+
 interface ScannerStore {
   filters: ScannerFilters;
   result: ScannerResult | null;
@@ -17,6 +75,17 @@ interface ScannerStore {
   activeScanId: string | null;
   /** Saved filter presets by name — persisted */
   presets: Record<string, ScannerFilters>;
+
+  /** Results-table layout — persisted */
+  columnOrder: string[];
+  columnVisibility: Record<string, boolean>;
+  /** Detail-card stacking order — persisted */
+  cardOrder: string[];
+
+  setColumnOrder: (order: string[]) => void;
+  setColumnVisibility: (visibility: Record<string, boolean>) => void;
+  resetColumns: () => void;
+  setCardOrder: (order: string[]) => void;
 
   setFilters: (partial: Partial<ScannerFilters>) => void;
   resetFilters: () => void;
@@ -72,6 +141,18 @@ export const useScannerStore = create<ScannerStore>()(
         lastScanDuration: null,
         activeScanId: null,
         presets: {},
+        columnOrder: [...DEFAULT_COLUMN_ORDER],
+        columnVisibility: { ...DEFAULT_COLUMN_VISIBILITY },
+        cardOrder: [...DEFAULT_CARD_ORDER],
+
+        setColumnOrder: (order) => set({ columnOrder: order }),
+        setColumnVisibility: (visibility) => set({ columnVisibility: visibility }),
+        resetColumns: () =>
+          set({
+            columnOrder: [...DEFAULT_COLUMN_ORDER],
+            columnVisibility: { ...DEFAULT_COLUMN_VISIBILITY },
+          }),
+        setCardOrder: (order) => set({ cardOrder: order }),
 
         setFilters: (partial) =>
           set((state) => ({ filters: { ...state.filters, ...partial } })),
@@ -164,16 +245,23 @@ export const useScannerStore = create<ScannerStore>()(
     },
     {
       name: "leaps-scanner",
-      version: 1,
+      version: 2,
       storage: createJSONStorage(() => localStorage),
       // Persist only small, durable state — never results or loading flags.
       partialize: (state) => ({
         filters: state.filters,
         activeScanId: state.activeScanId,
         presets: state.presets,
+        columnOrder: state.columnOrder,
+        columnVisibility: state.columnVisibility,
+        cardOrder: state.cardOrder,
       }),
-      // Merge persisted filters over defaults so newly added filter fields
-      // get their default values instead of being undefined.
+      // No-op migrate: the v1 shape is a strict subset of v2, so pass it straight
+      // to merge (which backfills the new keys). This just suppresses the "no
+      // migrate function" console error on the first v1→v2 rehydrate.
+      migrate: (persisted) => persisted as Partial<ScannerStore>,
+      // Merge persisted state over defaults so newly added fields get their
+      // defaults, and reconcile column/card ids so a stale layout can't corrupt.
       merge: (persisted, current) => {
         const p = (persisted ?? {}) as Partial<ScannerStore>;
         return {
@@ -181,6 +269,9 @@ export const useScannerStore = create<ScannerStore>()(
           ...p,
           filters: { ...DEFAULT_FILTERS, ...(p.filters ?? {}) },
           presets: p.presets ?? {},
+          columnOrder: reconcileOrder(p.columnOrder, DEFAULT_COLUMN_ORDER),
+          columnVisibility: reconcileVisibility(p.columnVisibility, DEFAULT_COLUMN_VISIBILITY),
+          cardOrder: reconcileOrder(p.cardOrder, DEFAULT_CARD_ORDER),
         };
       },
     }
