@@ -2,7 +2,7 @@
 
 > **Read this first.** Full context for an AI assistant or maintainer picking this project up cold.
 > Every factual claim here was verified against the codebase / database at the time of writing.
-> **Last updated: 2026-09-17.**
+> **Last updated: 2026-09-18.**
 >
 > **Companion context files** (read alongside this):
 > - `CLAUDE.md` (repo root) — how the assistant should communicate. Neutral, direct, trade-offs surfaced, no cheerleading.
@@ -421,14 +421,26 @@ cd frontend && npm audit --omit=dev     # only what ships to the browser
 
 1. **~~Purge legacy clamped snapshots and re-label~~ — DONE 2026-09-16** (§4.7, §7). Purged, re-labeled, retrained, validated: win rate 33.6% → 35.5%, AUC 0.856 → 0.880, edge $142k → $156k. Remaining ML-data work is now item 4 (era segmentation) and the dead `sector_relative_strength` feature (I2), plus §4.9 (fundamentals NaN).
 2. **~~Fix the ML dashboard's edge figure~~ — DONE 2026-09-17.** `/api/v1/ml/backtest-report` now merges in validate.py's **notional-matched edge + p-value** (read from `validation_report.json` → `sections.honest.H1_notional_matched`) plus the within-day shuffle-control z and a `report_age_days`. `BacktestReportSection.tsx` headlines the **risk-normalized** figure ($156,398, p=0.0001), demotes the 1-contract sim to an explicitly-labeled *"illustrative — debit-scaled ~100×"* line, and shows an amber **"stale — regenerate"** badge when the report is >7 days old. Frontend rebuilt so it ships on :8001 after a restart. *(Still a static artifact — the badge surfaces staleness rather than auto-regenerating; a regenerate-on-read endpoint remains a possible follow-up.)*
-3. **Gate on quote staleness** (§5) — `last_trade` is already recorded on every snapshot from yfinance's `lastTradeDate`; nothing reads it yet. Rejecting quotes older than a threshold is the natural follow-on to atomic pair pricing and needs no new data.
-4. **Fix `backtest.py` era segmentation** (§4.1) — makes every report section as trustworthy as the simulation already is. *Offered, awaiting user decision.*
-5. **Open a PR** for `feat/ted-positions-data-bolstering` → `main`, or merge it. 6 weeks of work sits on the branch.
+3. **Gate on quote staleness** (§5) — `last_trade` is already recorded on every snapshot from yfinance's `lastTradeDate`; nothing reads it yet. Rejecting quotes older than a threshold is the natural follow-on to atomic pair pricing and needs no new data. *(Queued 2026-09-18 → "Data integrity at scale" B.)*
+4. **Fix `backtest.py` era segmentation** (§4.1) — makes every report section as trustworthy as the simulation already is. *(Queued 2026-09-18 → "Data integrity at scale" E.)*
+5. **Open the PR** — branch `feat/ted-positions-data-bolstering` is committed and **pushed** (2026-09-18); the PR itself is not yet created because `gh` CLI isn't installed on this box. Open it from the compare URL (`.../compare/main...feat/ted-positions-data-bolstering?expand=1`) or `winget install GitHub.cli` then `gh pr create`. `main` still stale since 2026-06-18.
 6. **Patch Tier 1 dependencies** (§8) — 7 non-breaking upgrades; leave starlette/FastAPI deliberate.
 7. **Wait for label maturity** — the current model's first honest verdict arrives ~Oct 1 (60-day labels on July entries). Retrain weekly meanwhile; **don't over-read weekly MSE wiggles** (the 244–260 band has been noise for a month). Note §4.7: long-horizon labels are the most clamp-affected, so mature-tier counts will come in lower than previously projected once quotes are gated properly.
 8. **Keep collecting bear + regime data** — unevaluable until a regime shift or ~1,000 decided bear outcomes.
 9. **Deferred ideas**: EV-based ranking (expected annualized return per dollar risked), P(touch +50%) first-passage math to replace the Black-Scholes PoP, market-regime entry gate, position-sizing guidance, exit-by alerts, a "Top 10%" badge in the results table driven by a live per-model percentile cutoff, and a **resumable Optuna study** (SQLite `storage=` + `load_if_exists`) so a crashed/killed HPO run resumes instead of restarting from trial 0 (§6).
 10. **Paid historical options data** (ORATS / Polygon / CBOE DataShop, **one-time** pull ~$30–200) — the only way to obtain 2022 bear-market regime data. Do it *after* the schema settles so the backfill happens once. Backfilled rows would carry price/vol/structure features only (no historical FinBERT sentiment or point-in-time fundamentals).
+
+### Data integrity at scale — queued 2026-09-18 (task chips)
+
+The failure mode as the corpus enlarges is not size but **silent semantic drift** — every costly bug so far (§4.1 / §4.7 / §4.8) hid inside a healthy-looking aggregate. These five were spawned as background task chips; the first two are the highest leverage:
+
+- **A. Automate `validate.py` as a scheduled gate + alerting** — run it after each labeling pass and diff the scorecard / per-feature NaN rates / rejection rate against the prior run; alert on any regression. Turns the detector you already have into a standing guard. *(Highest leverage — the bugs were all silent.)*
+- **B. Quote-staleness gating** — gate the collector on the already-recorded `last_trade`; reject stale legs to `snapshot_rejections`. Mature (60d+) labels carry the most training weight and are the most fragile as aged LEAPS lose two-sided markets. *(Supersedes item 3.)*
+- **C. Fix / retire dead & NaN features** — `sector_relative_strength` (I2 dead) and the ~98%-NaN fundamentals (§4.9, FMP 402s); cache fundamentals so a 402 reuses the last good value instead of blanking. `FEATURE_NAMES` stays append-only.
+- **D. DB indices + rotating backups + scale trigger** — index the hot columns, automate `VACUUM INTO` backups, document the SQLite→DuckDB migration trigger (§2 / §6).
+- **E. Segment deciles + normalize scores by `model_version`** — closes the §4.1 era-pooling confound and unblocks the "Top 10%" badge. *(Supersedes item 4.)*
+
+Not queued (decisions, not code): **bear-regime data** (item 10 — the one gap more bull data can't fill) and **keeping the existing guardrails** (append-only `FEATURE_NAMES`, TimeSeriesSplit ordering I1, no-leakage I5) as the retrain gate.
 
 ---
 
