@@ -14,7 +14,7 @@
  *   Icon      → Lucide icon component
  *   end       → pass `end` to NavLink (exact match, for "/")
  */
-import { ScanSearch, Link2, BrainCircuit } from "lucide-react";
+import { ScanSearch, Link2, BrainCircuit, Briefcase, Zap } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 
 export interface NavItem {
@@ -43,5 +43,17 @@ export const NAV_ITEMS: NavItem[] = [
     label: "ML Dashboard",
     shortLabel: "ML",
     Icon: BrainCircuit,
+  },
+  {
+    path: "/positions",
+    label: "Positions",
+    shortLabel: "Pos",
+    Icon: Briefcase,
+  },
+  {
+    path: "/ted",
+    label: "The Ted",
+    shortLabel: "Ted",
+    Icon: Zap,
   },
 ];

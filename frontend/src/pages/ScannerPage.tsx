@@ -1,8 +1,11 @@
 import React, { useState, useEffect } from "react";
+import * as Dialog from "@radix-ui/react-dialog";
 import { useScannerStore } from "@/store/scannerStore";
+import type { RankedSpread } from "@/types";
 import { FilterPanel } from "@/components/scanner/FilterPanel";
 import { ResultsTable } from "@/components/scanner/ResultsTable";
 import { ScanSummaryBar } from "@/components/scanner/ScanSummaryBar";
+import { CardShell } from "@/components/detail/CardShell";
 import { SpreadDetailCard } from "@/components/detail/SpreadDetailCard";
 import { MLScoreCard } from "@/components/detail/MLScoreCard";
 import { SentimentScoreCard } from "@/components/detail/SentimentScoreCard";
@@ -10,24 +13,95 @@ import { RiskBreakdownCard } from "@/components/detail/RiskBreakdownCard";
 import { FundamentalsCard } from "@/components/detail/FundamentalsCard";
 import { Loader2, SlidersHorizontal, X } from "lucide-react";
 
+/** Detail-panel cards. `id` matches DEFAULT_CARD_ORDER in the store; render() takes
+ *  the selected spread. Reorder/expand is driven by the ids, not array position. */
+const CARD_REGISTRY: Array<{
+  id: string;
+  title: string;
+  render: (s: RankedSpread) => React.ReactNode;
+}> = [
+  { id: "spread", title: "Spread Details", render: (s) => <SpreadDetailCard item={s} /> },
+  { id: "ml", title: "ML Analysis", render: (s) => <MLScoreCard prediction={s.ml_prediction} /> },
+  { id: "sentiment", title: "News Sentiment", render: (s) => <SentimentScoreCard sentiment={s.sentiment} /> },
+  { id: "risk", title: "Risk Breakdown", render: (s) => <RiskBreakdownCard riskScore={s.risk_score} /> },
+  { id: "fundamentals", title: "Fundamentals", render: (s) => <FundamentalsCard fundamentals={s.fundamentals} /> },
+];
+
 export const ScannerPage: React.FC = () => {
-  const { result, isLoading, error, selectedSpread, selectSpread } = useScannerStore();
+  const {
+    result, isLoading, error, selectedSpread, selectSpread,
+    resumeActiveScan, loadPresets, cardOrder, setCardOrder,
+  } = useScannerStore();
   const [filterOpen, setFilterOpen] = useState(false);
+
+  // Detail-card reorder (native DnD, desktop) + expand-to-focus (modal).
+  const [expandedCardId, setExpandedCardId] = useState<string | null>(null);
+  const [dragCardId, setDragCardId] = useState<string | null>(null);
+  const [dragOverCardId, setDragOverCardId] = useState<string | null>(null);
 
   // Auto-close filter drawer when scan starts
   useEffect(() => {
     if (isLoading) setFilterOpen(false);
   }, [isLoading]);
 
-  const detailContent = selectedSpread && (
-    <div className="p-3 space-y-3">
-      <SpreadDetailCard item={selectedSpread} />
-      <MLScoreCard prediction={selectedSpread.ml_prediction} />
-      <SentimentScoreCard sentiment={selectedSpread.sentiment} />
-      <RiskBreakdownCard riskScore={selectedSpread.risk_score} />
-      <FundamentalsCard fundamentals={selectedSpread.fundamentals} />
-    </div>
-  );
+  // Reattach to a scan that was running when the page was closed/refreshed,
+  // and pull server-side presets (durable across browsers/origins).
+  useEffect(() => {
+    void resumeActiveScan();
+    void loadPresets();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const orderedCards = cardOrder
+    .map((id) => CARD_REGISTRY.find((c) => c.id === id))
+    .filter((c): c is (typeof CARD_REGISTRY)[number] => !!c);
+
+  const expandedCard = expandedCardId
+    ? CARD_REGISTRY.find((c) => c.id === expandedCardId) ?? null
+    : null;
+
+  // Move `from` to just before `to` in the persisted card order.
+  const moveCard = (from: string, to: string) => {
+    if (from === to) return;
+    const next = cardOrder.filter((id) => id !== from);
+    const idx = next.indexOf(to);
+    next.splice(idx < 0 ? next.length : idx, 0, from);
+    setCardOrder(next);
+  };
+
+  const renderCards = () => {
+    const s = selectedSpread;
+    if (!s) return null;
+    return (
+      <div className="p-3 space-y-3">
+        {orderedCards.map((card) => (
+          <CardShell
+            key={card.id}
+            isDragging={dragCardId === card.id}
+            isDragOver={dragOverCardId === card.id && dragCardId !== card.id}
+            onExpand={() => setExpandedCardId(card.id)}
+            onDragStart={() => setDragCardId(card.id)}
+            onDragOver={(e) => {
+              if (!dragCardId) return;
+              e.preventDefault();
+              if (dragOverCardId !== card.id) setDragOverCardId(card.id);
+            }}
+            onDrop={() => {
+              if (dragCardId) moveCard(dragCardId, card.id);
+              setDragCardId(null);
+              setDragOverCardId(null);
+            }}
+            onDragEnd={() => {
+              setDragCardId(null);
+              setDragOverCardId(null);
+            }}
+          >
+            {card.render(s)}
+          </CardShell>
+        ))}
+      </div>
+    );
+  };
 
   return (
     <div className="flex flex-col h-full overflow-hidden">
@@ -111,7 +185,7 @@ export const ScannerPage: React.FC = () => {
                 Spread Details — Rank #{selectedSpread.rank}
               </h2>
             </div>
-            {detailContent}
+            {renderCards()}
           </aside>
         )}
       </div>
@@ -129,10 +203,41 @@ export const ScannerPage: React.FC = () => {
                 <X size={16} />
               </button>
             </div>
-            {detailContent}
+            {renderCards()}
           </div>
         </div>
       )}
+
+      {/* Expand-to-focus modal — enlarges one card so its charts/detail are readable */}
+      <Dialog.Root
+        open={!!expandedCard && !!selectedSpread}
+        onOpenChange={(open) => !open && setExpandedCardId(null)}
+      >
+        <Dialog.Portal>
+          <Dialog.Overlay className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm" />
+          <Dialog.Content className="fixed left-1/2 top-1/2 z-50 w-[92vw] max-w-2xl max-h-[88vh] -translate-x-1/2 -translate-y-1/2 overflow-y-auto rounded-xl border border-gray-700 bg-gray-900 shadow-2xl focus:outline-none">
+            <div className="flex items-center justify-between px-4 py-3 border-b border-gray-700 sticky top-0 bg-gray-900 z-10">
+              <Dialog.Title className="text-sm font-semibold text-white">
+                {expandedCard?.title}
+                {selectedSpread && (
+                  <span className="text-gray-500 font-normal ml-2">
+                    {selectedSpread.spread.underlying} · Rank #{selectedSpread.rank}
+                  </span>
+                )}
+              </Dialog.Title>
+              <Dialog.Close className="text-gray-400 hover:text-white">
+                <X size={16} />
+              </Dialog.Close>
+            </div>
+            <Dialog.Description className="sr-only">
+              Enlarged view of the {expandedCard?.title} detail card.
+            </Dialog.Description>
+            <div className="p-4">
+              {expandedCard && selectedSpread && expandedCard.render(selectedSpread)}
+            </div>
+          </Dialog.Content>
+        </Dialog.Portal>
+      </Dialog.Root>
 
     </div>
   );

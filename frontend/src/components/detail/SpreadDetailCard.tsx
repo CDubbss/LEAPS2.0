@@ -1,5 +1,6 @@
-import React from "react";
+import React, { useState } from "react";
 import type { RankedSpread } from "@/types";
+import { AddPositionDialog } from "@/pages/PositionsPage";
 import {
   formatCurrency,
   formatDate,
@@ -10,7 +11,7 @@ import {
   spreadTypeLabel,
   spreadTypeBadgeColor,
 } from "@/utils/formatting";
-import { TrendingUp, TrendingDown, Target } from "lucide-react";
+import { TrendingUp, TrendingDown, Target, Briefcase, Check } from "lucide-react";
 import { InfoTooltip } from "@/components/ui/Tooltip";
 import { TOOLTIPS } from "@/utils/tooltips";
 
@@ -22,6 +23,14 @@ export const SpreadDetailCard: React.FC<Props> = ({ item }) => {
   const { spread } = item;
   const long = spread.long_leg;
   const short = spread.short_leg;
+  const [showTrack, setShowTrack] = useState(false);
+  const [tracked, setTracked] = useState(false);
+
+  // Re-enable Track when a different spread is selected — otherwise tracking
+  // one spread would lock the button for every later selection.
+  React.useEffect(() => {
+    setTracked(false);
+  }, [item]);
 
   return (
     <div className="bg-gray-800 rounded-lg p-4 space-y-4">
@@ -39,6 +48,19 @@ export const SpreadDetailCard: React.FC<Props> = ({ item }) => {
             >
               {spreadTypeLabel(spread.spread_type)}
             </span>
+            <button
+              onClick={() => setShowTrack(true)}
+              disabled={tracked}
+              className={`flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium transition-colors ${
+                tracked
+                  ? "bg-green-900/40 text-green-400"
+                  : "bg-sky-600 hover:bg-sky-500 text-white"
+              }`}
+              title="Track this spread on the Positions page"
+            >
+              {tracked ? <Check size={12} /> : <Briefcase size={12} />}
+              {tracked ? "Tracked" : "Track"}
+            </button>
           </div>
           <p className="text-sm text-gray-400 mt-1">
             Exp: {formatDate(spread.expiration)} · {formatDTE(spread.dte)}
@@ -130,6 +152,27 @@ export const SpreadDetailCard: React.FC<Props> = ({ item }) => {
           <LegRow option={short} label="Sell" />
         </div>
       )}
+
+      {/* Track-position dialog — pre-filled from this spread */}
+      {showTrack && (
+        <AddPositionDialog
+          initial={{
+            symbol: spread.underlying,
+            spread_type: spread.spread_type,
+            long_strike: long.strike,
+            long_option_type: long.option_type,
+            short_strike: short?.strike ?? null,
+            short_option_type: short?.option_type ?? null,
+            expiration: spread.expiration,
+            entry_debit: spread.net_debit,
+          }}
+          onClose={() => setShowTrack(false)}
+          onAdded={() => {
+            setShowTrack(false);
+            setTracked(true);
+          }}
+        />
+      )}
     </div>
   );
 };
@@ -162,14 +205,14 @@ const LegRow: React.FC<{ option: import("@/types").OptionQuote; label: string }>
         <span className="text-gray-500 text-xs">per share</span>
       </span>
     </div>
-    <div className="grid grid-cols-2 gap-x-2 gap-y-1 text-gray-400 lg:grid-cols-4">
-      <span className="overflow-hidden truncate">IV <InfoTooltip content={TOOLTIPS.iv_pct} />: {formatIV(option.implied_volatility)}</span>
-      <span className="overflow-hidden truncate">Δ <InfoTooltip content={TOOLTIPS.delta} />: {formatGreek(option.delta)}</span>
-      <span className="overflow-hidden truncate">Γ <InfoTooltip content={TOOLTIPS.gamma} />: {formatGreek(option.gamma, 5)}</span>
-      <span className="overflow-hidden truncate">Θ <InfoTooltip content={TOOLTIPS.theta} />: {formatGreek(option.theta)}</span>
-      <span className="overflow-hidden truncate">Vol: {option.volume.toLocaleString()}</span>
-      <span className="overflow-hidden truncate">OI: {option.open_interest.toLocaleString()}</span>
-      <span className="overflow-hidden truncate">ν <InfoTooltip content={TOOLTIPS.vega} />: {formatGreek(option.vega)}</span>
+    <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-gray-400">
+      <span>IV <InfoTooltip content={TOOLTIPS.iv_pct} />: {formatIV(option.implied_volatility)}</span>
+      <span>Δ <InfoTooltip content={TOOLTIPS.delta} />: {formatGreek(option.delta, 2)}</span>
+      <span>Γ <InfoTooltip content={TOOLTIPS.gamma} />: {formatGreek(option.gamma, 4)}</span>
+      <span>Θ <InfoTooltip content={TOOLTIPS.theta} />: {formatGreek(option.theta, 3)}</span>
+      <span>Vol: {option.volume.toLocaleString()}</span>
+      <span>OI: {option.open_interest.toLocaleString()}</span>
+      <span>ν <InfoTooltip content={TOOLTIPS.vega} />: {formatGreek(option.vega, 2)}</span>
     </div>
   </div>
 );

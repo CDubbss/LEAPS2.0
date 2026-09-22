@@ -50,8 +50,12 @@ Usage
     # Null bad historical data, reset labels, re-label from clean snapshots
     python -m backend.ml.label_outcomes --repair
 
-    # Print data quality audit (recent bad-rate, distribution)
+    # Print data quality audit (recent bad-rate, distribution, rejections)
     python -m backend.ml.label_outcomes --audit
+
+    # Null LEGACY boundary-pinned snapshots, then re-label (destructive)
+    python -m backend.ml.label_outcomes --repair-clamped
+    python -m backend.ml.label_outcomes
 
     # Preview without writing to DB
     python -m backend.ml.label_outcomes --dry-run
@@ -63,12 +67,15 @@ Usage
 import argparse
 import json
 import logging
+import math
 import sqlite3
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta
-from typing import Optional
+from typing import NamedTuple, Optional
 
 import numpy as np
+import pandas as pd
 import yfinance as yf
 
 DB_PATH = "backend/ml/data/spread_outcomes.db"
@@ -98,7 +105,9 @@ LABEL_TIERS = [
     ("interim_10d",   7,   10),   # best of days  3-10  (~2 calendar weeks)
     ("interim_21d",  21,   21),   # best of days  3-21  (~1 month)
     ("interim_30d",  28,   35),   # best of days  3-35  (~7 weeks)
-    ("interim_90d",  90,   90),   # best of days  3-90  (~4.5 months)
+    ("interim_45d",  40,   45),   # best of days  3-45  (~2 months)
+    ("interim_60d",  55,   60),   # best of days  3-60  (~3 months)
+    ("interim_90d",  80,   90),   # best of days  3-90  (~4.5 months)
     ("interim_180d", 180,  180),  # best of days  3-180 (~9 months)
     ("interim_360d", 360,  360),  # best of days  3-360 (~18 months)
     ("interim_540d", 540,  540),  # best of days  3-540 (~27 months)
@@ -111,12 +120,14 @@ TIER_RANK: dict[str, int] = {
     "interim_10d":  2,
     "interim_21d":  3,
     "interim_30d":  4,
-    "interim_90d":  5,
-    "interim_180d": 6,
-    "interim_360d": 7,
-    "interim_540d": 8,
-    "interim_720d": 9,
-    "expiry":       10,
+    "interim_45d":  5,
+    "interim_60d":  6,
+    "interim_90d":  7,
+    "interim_180d": 8,
+    "interim_360d": 9,
+    "interim_540d": 10,
+    "interim_720d": 11,
+    "expiry":       12,
 }
 
 
@@ -147,14 +158,91 @@ def _score_from_pnl(pnl_pct: float) -> float:
 
 MAX_BID_ASK_SPREAD_PCT = 0.50  # reject mids where (ask-bid)/ask > 50% (illiquid)
 
+# A vertical spread is ONE instrument and must be priced as one.  Requiring a
+# live two-sided quote on every leg is what prevents the dominant historical
+# failure mode: differencing a stale `lastPrice` print on one leg against a live
+# mid on the other, which manufactures arbitrage-impossible spread values that
+# were then clamped to a boundary and stored as if real.
+#
+# Set to False only to deliberately trade data quality for snapshot volume.
+REQUIRE_TWO_SIDED_QUOTES = True
+
+# A raw spread value slightly outside [0, width] is quote-tick noise and is
+# snapped to the boundary.  Anything beyond this is a broken quote and is
+# REJECTED rather than clamped -- clamping a broken quote yields exactly
+# -100% or max-profit P&L, which permanently decides first-passage outcomes.
+#
+# Deliberately ABSOLUTE, not a fraction of width.  A bounds violation is a
+# quote-mechanics artifact (options tick in $0.01-$0.05, a mid is a half-tick,
+# and differencing two legs compounds that), so its plausible size does not
+# scale with the spread.  A proportional tolerance would admit a $0.20
+# violation on a $10 spread -- a real arbitrage breach, not rounding -- and
+# clamping that to the floor stores a -100% P&L that trips the stop forever.
+CLAMP_TOLERANCE = 0.05  # one full tick on nickel-quoted options
+
+# data_quality values that represent a usable mark.  Anything else is recorded
+# in snapshot_rejections and never written to price_snapshots.
+USABLE_QUALITIES = frozenset({"ok", "clamped"})
+
+
 # ---------------------------------------------------------------------------
 # Price provider abstraction
 # ---------------------------------------------------------------------------
 
+@dataclass(frozen=True)
+class _Quote:
+    """
+    A single option leg's price plus the provenance needed to judge it later.
+
+    source:
+        'quote' — live two-sided market (both bid and ask present)
+        'last'  — fell back to a trade print of unknown age; unusable for
+                  spread pricing under REQUIRE_TWO_SIDED_QUOTES
+    last_trade: provider-supplied timestamp of the last trade, when available.
+        Recorded but NOT yet gated on -- staleness rejection is a separate step.
+    """
+    mid: float
+    bid: Optional[float]
+    ask: Optional[float]
+    source: str
+    last_trade: Optional[str] = None
+
+
+class SpreadMark(NamedTuple):
+    """
+    The result of pricing a spread, carrying the raw inputs alongside the
+    corrected value so no future question about a row needs archaeology.
+
+    current_value is NaN when data_quality is not usable, so existing callers
+    that index result[0] and test `>= 0` correctly treat it as no-data.
+    """
+    current_value: float
+    pnl_pct: float
+    data_quality: str
+    raw_value: Optional[float] = None
+    spread_width: Optional[float] = None
+    long_quote: Optional[_Quote] = None
+    short_quote: Optional[_Quote] = None
+    provider: Optional[str] = None
+
+    @property
+    def usable(self) -> bool:
+        return self.data_quality in USABLE_QUALITIES
+
+
 class _PriceProvider(ABC):
-    """Minimal interface for fetching a live option mid price."""
+    """Minimal interface for fetching a live option quote."""
 
     @abstractmethod
+    def fetch_option_quote(
+        self,
+        underlying: str,
+        expiry_str: str,
+        strike: float,
+        option_type: str,
+    ) -> Optional[_Quote]:
+        """Return a _Quote or None if the contract is unavailable / illiquid."""
+
     def fetch_option_mid(
         self,
         underlying: str,
@@ -162,7 +250,9 @@ class _PriceProvider(ABC):
         strike: float,
         option_type: str,
     ) -> Optional[float]:
-        """Return mid price or None if unavailable / illiquid."""
+        """Backwards-compatible mid accessor."""
+        q = self.fetch_option_quote(underlying, expiry_str, strike, option_type)
+        return q.mid if q else None
 
     @property
     @abstractmethod
@@ -221,28 +311,43 @@ class _YFinanceProvider(_PriceProvider):
                 100 * self._cache_hits / total,
             )
 
-    def fetch_option_mid(
+    def fetch_option_quote(
         self,
         underlying: str,
         expiry_str: str,
         strike: float,
         option_type: str,
-    ) -> Optional[float]:
+    ) -> Optional[_Quote]:
         try:
             chain = self._get_chain(underlying, expiry_str)
             df = chain.calls if option_type == "call" else chain.puts
             match = df[abs(df["strike"] - strike) < 0.01]
             if match.empty:
                 return None
+
+            last_trade = None
+            if "lastTradeDate" in match.columns:
+                raw_ts = match["lastTradeDate"].iloc[0]
+                if raw_ts is not None and not pd.isna(raw_ts):
+                    last_trade = str(raw_ts)
+
             bid = float(match["bid"].iloc[0])
             ask = float(match["ask"].iloc[0])
+
+            # No live market on this leg.  Return the trade print tagged as
+            # 'last' rather than swallowing it: the pair-pricing layer decides
+            # whether it is acceptable, and the provenance is recorded either way.
             if bid <= 0 and ask <= 0:
                 for col in ("lastPrice", "last"):
                     if col in match.columns:
                         last = float(match[col].iloc[0])
                         if last > 0:
-                            return last
+                            return _Quote(
+                                mid=last, bid=None, ask=None,
+                                source="last", last_trade=last_trade,
+                            )
                 return None
+
             mid = (bid + ask) / 2.0
             if ask > 0 and (ask - bid) / ask > MAX_BID_ASK_SPREAD_PCT:
                 logger.debug(
@@ -252,7 +357,10 @@ class _YFinanceProvider(_PriceProvider):
                     bid, ask, 100 * (ask - bid) / ask,
                 )
                 return None
-            return mid
+            return _Quote(
+                mid=mid, bid=bid, ask=ask,
+                source="quote", last_trade=last_trade,
+            )
         except Exception as e:
             logger.debug(
                 "yfinance option fetch failed %s %s %.1f %s: %s",
@@ -283,13 +391,13 @@ class _SchwabProvider(_PriceProvider):
     def name(self) -> str:
         return "schwab"
 
-    def fetch_option_mid(
+    def fetch_option_quote(
         self,
         underlying: str,
         expiry_str: str,
         strike: float,
         option_type: str,
-    ) -> Optional[float]:
+    ) -> Optional[_Quote]:
         try:
             from schwab.client import Client as SchwabClient
             exp = date.fromisoformat(expiry_str)
@@ -330,7 +438,13 @@ class _SchwabProvider(_PriceProvider):
                                 bid, ask, 100 * (ask - bid) / ask,
                             )
                             return None
-                        return round((bid + ask) / 2.0, 4)
+                        return _Quote(
+                            mid=round((bid + ask) / 2.0, 4),
+                            bid=bid, ask=ask, source="quote",
+                            last_trade=opt.get("tradeTimeInLong") and str(
+                                opt.get("tradeTimeInLong")
+                            ),
+                        )
             return None  # strike not found in chain
         except Exception as e:
             logger.debug(
@@ -360,14 +474,41 @@ def _build_price_provider() -> _PriceProvider:
 _price_provider: Optional[_PriceProvider] = None
 
 
+def _active_provider() -> _PriceProvider:
+    """
+    Return the active price provider, building one on first use.
+
+    Callers outside label_outcomes() (e.g. the /api/v1/ml spread-detail route)
+    reach the pricing helpers without going through the run entrypoint; without
+    this the module-level singleton is still None and every such call raises.
+    """
+    global _price_provider
+    if _price_provider is None:
+        _price_provider = _build_price_provider()
+    return _price_provider
+
+
+def _fetch_option_quote(
+    underlying: str,
+    expiry_str: str,
+    strike: float,
+    option_type: str,
+) -> Optional[_Quote]:
+    """Delegate to the active price provider."""
+    return _active_provider().fetch_option_quote(
+        underlying, expiry_str, strike, option_type
+    )
+
+
 def _fetch_option_mid(
     underlying: str,
     expiry_str: str,
     strike: float,
     option_type: str,
 ) -> Optional[float]:
-    """Delegate to the active price provider."""
-    return _price_provider.fetch_option_mid(underlying, expiry_str, strike, option_type)
+    """Backwards-compatible mid accessor."""
+    q = _fetch_option_quote(underlying, expiry_str, strike, option_type)
+    return q.mid if q else None
 
 
 def _fetch_spot_at_date(underlying: str, target_date: date) -> Optional[float]:
@@ -389,68 +530,127 @@ def _fetch_spot_at_date(underlying: str, target_date: date) -> Optional[float]:
         return None
 
 
-def _compute_spread_value_mtm(contract: dict, entry_debit: float) -> Optional[tuple[float, float, str]]:
+def _rejected(reason: str, **kw) -> SpreadMark:
+    """Build an unusable SpreadMark carrying the evidence for the rejection."""
+    return SpreadMark(
+        current_value=math.nan, pnl_pct=math.nan, data_quality=reason, **kw
+    )
+
+
+def _compute_spread_value_mtm(contract: dict, entry_debit: float) -> Optional[SpreadMark]:
     """
-    Fetch current option prices and compute spread value and P&L%.
-    Returns (current_value, pnl_pct, data_quality) or None on failure.
+    Price a spread ATOMICALLY -- both legs from the same chain snapshot, both
+    with live two-sided quotes -- and return a SpreadMark.
+
+    Returns None when a leg is simply absent from the chain (no data; the
+    interval stays unrecorded and is retried on the next run).
 
     data_quality is one of:
-        'ok'      — prices were clean and within theoretical bounds
-        'clamped' — raw value was outside [0, spread_width] and was corrected
+        'ok'               — both legs live-quoted, raw value within bounds
+        'clamped'          — raw value marginally outside bounds; snapped
+        'rejected_stale'   — a leg had no live market (last-print fallback)
+        'rejected_bounds'  — raw value materially outside [0, spread_width]
 
-    current_value is clamped to [0, spread_width] — a debit spread cannot be
-    worth less than zero or more than the distance between its strikes.
+    Only 'ok' and 'clamped' are usable.  The two rejection states exist because
+    a broken quote clamped to a boundary yields exactly -100% or max-profit
+    P&L, which permanently and wrongly decides the ±50% first-passage outcome.
+    Discarding the mark costs one row; keeping it corrupts a label forever.
     """
-    long_mid = _fetch_option_mid(
+    provider_name = _active_provider().name
+
+    long_q = _fetch_option_quote(
         contract["underlying"],
         contract["expiration"],
         contract["long_strike"],
         contract["long_option_type"],
     )
-    if long_mid is None:
+    if long_q is None:
         return None
 
+    short_q = None
     short_mid = 0.0
     if contract.get("short_strike") is not None:
-        fetched = _fetch_option_mid(
+        short_q = _fetch_option_quote(
             contract["underlying"],
             contract["expiration"],
             contract["short_strike"],
             contract["short_option_type"],
         )
-        if fetched is None:
+        if short_q is None:
             return None  # can't value a spread without both legs
-        short_mid = fetched
+        short_mid = short_q.mid
 
-    # Theoretical bounds for a debit spread:
-    #   floor = 0   (worthless at expiry, OTM)
-    #   ceiling = spread_width (fully ITM at expiry)
     spread_width = contract.get("spread_width") or abs(
         contract["long_strike"] - (contract.get("short_strike") or contract["long_strike"])
     )
-    raw_value = long_mid - short_mid
-    current_value = max(0.0, min(raw_value, spread_width)) if spread_width > 0 else max(0.0, raw_value)
+    prov = {
+        "spread_width": spread_width,
+        "long_quote": long_q,
+        "short_quote": short_q,
+        "provider": provider_name,
+    }
 
-    data_quality = "ok"
-    if raw_value != current_value:
-        data_quality = "clamped"
+    # --- Gate 1: both legs must carry a live two-sided market -------------
+    # Differencing a stale trade print against a live mid is what produced the
+    # arbitrage-impossible spread values in the historical data.
+    if REQUIRE_TWO_SIDED_QUOTES:
+        stale = [
+            side for side, q in (("long", long_q), ("short", short_q))
+            if q is not None and q.source != "quote"
+        ]
+        if stale:
+            logger.debug(
+                "Rejected %s: no live market on %s leg(s)",
+                contract.get("underlying"), "+".join(stale),
+            )
+            return _rejected("rejected_stale", raw_value=long_q.mid - short_mid, **prov)
+
+    raw_value = long_q.mid - short_mid
+
+    # --- Gate 2: theoretical bounds for a debit spread --------------------
+    #   floor   = 0            (worthless at expiry)
+    #   ceiling = spread_width (fully ITM at expiry)
+    if spread_width > 0:
+        lo, hi = 0.0, float(spread_width)
+    else:
+        lo, hi = 0.0, math.inf
+    tolerance = CLAMP_TOLERANCE
+
+    if raw_value < lo:
+        violation = lo - raw_value
+    elif raw_value > hi:
+        violation = raw_value - hi
+    else:
+        violation = 0.0
+
+    if violation > tolerance:
         logger.debug(
-            "Spread value clamped %s: raw=%.4f -> %.4f (width=%.2f)",
-            contract.get("underlying"), raw_value, current_value, spread_width,
+            "Rejected %s: raw=%.4f outside [0, %.2f] by %.4f (tolerance %.4f)",
+            contract.get("underlying"), raw_value, spread_width, violation, tolerance,
         )
+        return _rejected("rejected_bounds", raw_value=raw_value, **prov)
+
+    current_value = max(lo, min(raw_value, hi))
+    data_quality = "clamped" if violation > 0 else "ok"
 
     pnl_pct = (current_value - entry_debit) / entry_debit * 100.0
-    return current_value, pnl_pct, data_quality
+    return SpreadMark(
+        current_value=current_value,
+        pnl_pct=pnl_pct,
+        data_quality=data_quality,
+        raw_value=raw_value,
+        **prov,
+    )
 
 
 def _compute_spread_value_at_expiry(
     contract: dict,
     entry_debit: float,
     expiry: date,
-) -> Optional[tuple[float, float, str]]:
+) -> Optional[SpreadMark]:
     """
     Compute spread intrinsic value at expiry using historical stock price.
-    Returns (intrinsic_value, pnl_pct, data_quality) or None on failure.
+    Returns a SpreadMark or None on failure.
 
     Intrinsic value is always deterministic from spot + strikes, so data_quality
     is always 'ok' here (no market bid/ask uncertainty).
@@ -478,17 +678,78 @@ def _compute_spread_value_at_expiry(
 
     intrinsic = long_value - short_value
     pnl_pct = (intrinsic - entry_debit) / entry_debit * 100.0
-    return intrinsic, pnl_pct, "ok"
+    return SpreadMark(
+        current_value=intrinsic,
+        pnl_pct=pnl_pct,
+        data_quality="ok",
+        raw_value=intrinsic,
+        provider="intrinsic",
+    )
 
 
 # ---------------------------------------------------------------------------
 # Core labeling logic
 # ---------------------------------------------------------------------------
 
+def _record_rejection(
+    conn: sqlite3.Connection,
+    outcome_id: int,
+    interval: int,
+    snapshot_date: date,
+    mark: SpreadMark,
+) -> None:
+    """
+    Persist why a mark was discarded, keeping the raw leg quotes.
+
+    Upserts on (outcome_id, days_since_entry) so a permanently unquotable
+    contract holds one row carrying its latest reason and an attempt count,
+    rather than appending a row on every daily run.
+    """
+    lq, sq = mark.long_quote, mark.short_quote
+    conn.execute(
+        """
+        INSERT INTO snapshot_rejections
+            (outcome_id, days_since_entry, snapshot_date, reason,
+             raw_value, spread_width,
+             long_bid, long_ask, long_source, long_last_trade,
+             short_bid, short_ask, short_source, short_last_trade,
+             price_provider, attempts, rejected_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, CURRENT_TIMESTAMP)
+        ON CONFLICT(outcome_id, days_since_entry) DO UPDATE SET
+            reason          = excluded.reason,
+            raw_value       = excluded.raw_value,
+            long_bid        = excluded.long_bid,
+            long_ask        = excluded.long_ask,
+            long_source     = excluded.long_source,
+            long_last_trade = excluded.long_last_trade,
+            short_bid       = excluded.short_bid,
+            short_ask       = excluded.short_ask,
+            short_source    = excluded.short_source,
+            short_last_trade= excluded.short_last_trade,
+            price_provider  = excluded.price_provider,
+            attempts        = snapshot_rejections.attempts + 1,
+            rejected_at     = CURRENT_TIMESTAMP
+        """,
+        (
+            outcome_id, interval, snapshot_date.isoformat(), mark.data_quality,
+            None if mark.raw_value is None else round(mark.raw_value, 4),
+            mark.spread_width,
+            lq.bid if lq else None, lq.ask if lq else None,
+            lq.source if lq else None, lq.last_trade if lq else None,
+            sq.bid if sq else None, sq.ask if sq else None,
+            sq.source if sq else None, sq.last_trade if sq else None,
+            mark.provider,
+        ),
+    )
+
+
 def collect_snapshots(conn: sqlite3.Connection, dry_run: bool = False) -> int:
     """
     For each unlabeled spread, collect any price snapshots that are due.
     A snapshot is due when days_since_entry >= interval and not yet recorded.
+
+    Marks that fail the quality gates are recorded in snapshot_rejections and
+    left out of price_snapshots, so the interval is retried on the next run.
 
     Returns total number of new snapshots written.
     """
@@ -505,6 +766,7 @@ def collect_snapshots(conn: sqlite3.Connection, dry_run: bool = False) -> int:
     """).fetchall()
 
     total_written = 0
+    total_rejected = 0
 
     for row in rows:
         outcome_id = row[0]
@@ -548,7 +810,19 @@ def collect_snapshots(conn: sqlite3.Connection, dry_run: bool = False) -> int:
                 )
                 continue
 
-            current_value, pnl_pct, data_quality = result
+            # A rejected mark is NOT written to price_snapshots: the UNIQUE
+            # (outcome_id, days_since_entry) constraint would permanently block
+            # a good snapshot at that interval.  Leaving it unwritten preserves
+            # the retry on the next run; the evidence goes to snapshot_rejections.
+            if not result.usable:
+                total_rejected += 1
+                if not dry_run:
+                    _record_rejection(conn, outcome_id, interval, snapshot_date, result)
+                continue
+
+            current_value, pnl_pct, data_quality = (
+                result.current_value, result.pnl_pct, result.data_quality
+            )
             score = _score_from_pnl(pnl_pct)
 
             logger.info(
@@ -558,17 +832,29 @@ def collect_snapshots(conn: sqlite3.Connection, dry_run: bool = False) -> int:
             )
 
             if not dry_run:
+                lq, sq = result.long_quote, result.short_quote
                 conn.execute(
                     """
                     INSERT OR IGNORE INTO price_snapshots
                         (outcome_id, days_since_entry, snapshot_date,
-                         current_value, pnl_pct, outcome_score, data_quality)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                         current_value, pnl_pct, outcome_score, data_quality,
+                         raw_value, spread_width,
+                         long_bid, long_ask, long_source, long_last_trade,
+                         short_bid, short_ask, short_source, short_last_trade,
+                         price_provider)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         outcome_id, interval, snapshot_date.isoformat(),
                         round(current_value, 4), round(pnl_pct, 2), round(score, 2),
                         data_quality,
+                        None if result.raw_value is None else round(result.raw_value, 4),
+                        result.spread_width,
+                        lq.bid if lq else None, lq.ask if lq else None,
+                        lq.source if lq else None, lq.last_trade if lq else None,
+                        sq.bid if sq else None, sq.ask if sq else None,
+                        sq.source if sq else None, sq.last_trade if sq else None,
+                        result.provider,
                     ),
                 )
                 total_written += 1
@@ -580,7 +866,154 @@ def collect_snapshots(conn: sqlite3.Connection, dry_run: bool = False) -> int:
     if not dry_run:
         conn.commit()
 
+    if total_rejected:
+        attempted = total_written + total_rejected
+        logger.info(
+            "Snapshots: %d written, %d rejected on quality gates (%.1f%% of %d attempted)",
+            total_written, total_rejected,
+            100.0 * total_rejected / attempted, attempted,
+        )
+
     return total_written
+
+
+PROFIT_TARGET_PCT = 50.0   # exit when spread P&L reaches +50%
+STOP_LOSS_PCT = -50.0      # typical exit when P&L dips to -50% of debit
+
+# Commission: $13 per 10-contract spread per side (open or close).
+# Round trip = $26 for 10 contracts = $2.60/contract = $0.026/share.
+COMMISSION_PER_CONTRACT = 2.60   # $13 / 10 contracts × 2 sides (open + close) ÷ 10
+CONTRACTS_PER_TRADE     = 10
+
+
+def _commission_adjusted_target(entry_debit: float) -> float:
+    """
+    Return the P&L % threshold that equals +50% profit AFTER commissions.
+
+    Commission per share: $26 round trip / 10 contracts / 100 shares = $0.026
+    The raw spread P&L must exceed 50% of debit PLUS commissions.
+    """
+    if not entry_debit or entry_debit <= 0:
+        return PROFIT_TARGET_PCT
+    commission_per_share = (COMMISSION_PER_CONTRACT * 2) / (CONTRACTS_PER_TRADE * 100)
+    # Target P&L % = (target_dollar + commission) / entry_debit * 100
+    target_dollar = entry_debit * (PROFIT_TARGET_PCT / 100) + commission_per_share
+    return (target_dollar / entry_debit) * 100
+
+
+def compute_strategy_outcomes(conn: sqlite3.Connection, dry_run: bool = False) -> int:
+    """
+    Walk each spread's snapshots CHRONOLOGICALLY and apply the exit rules —
+    whichever threshold is touched first decides the outcome:
+
+    Win  = P&L reached the commission-adjusted +50% target first
+    Loss = P&L dipped to -50% first (typical stop — the trader exits there),
+           OR the spread expired without ever reaching the target
+    Open = neither threshold touched and not yet expired
+
+    Recomputes ALL rows with snapshots on every run (not just unlabeled ones)
+    so rule changes retroactively relabel history; writes only when the
+    stored values actually change.
+
+    Note: snapshots are interval-based — a dip below -50% between snapshot
+    days is invisible, so stop-loss labels are snapshot-resolution.
+
+    Sets on spread_outcomes:
+      strategy_result  — 'win' | 'loss' | 'open'
+      days_to_target   — days to first target touch (NULL if never)
+      days_to_stop     — days to first -50% touch (NULL if never)
+      strategy_pnl     — +50 if win, P&L at stop/expiry/last observation otherwise
+    """
+    rows = conn.execute("""
+        SELECT so.id, so.entry_date, so.expiration, so.entry_net_debit,
+               so.strategy_result, so.days_to_target, so.days_to_stop, so.strategy_pnl
+        FROM spread_outcomes so
+        WHERE EXISTS (
+              SELECT 1 FROM price_snapshots ps
+              WHERE ps.outcome_id = so.id AND ps.pnl_pct IS NOT NULL
+          )
+    """).fetchall()
+
+    updated = 0
+    counts = {"win": 0, "loss": 0, "open": 0}
+    for (outcome_id, entry_str, expiry_str, entry_debit,
+         old_result, old_dtt, old_dts, old_pnl) in rows:
+        snaps = conn.execute(
+            """
+            SELECT days_since_entry, pnl_pct
+            FROM price_snapshots
+            WHERE outcome_id = ? AND pnl_pct IS NOT NULL
+            ORDER BY days_since_entry
+            """,
+            (outcome_id,),
+        ).fetchall()
+
+        if not snaps:
+            continue
+
+        target_pct = _commission_adjusted_target(entry_debit)
+        days_to_target = None
+        days_to_stop = None
+        result = None
+        strategy_pnl = None
+
+        # First-passage walk: whichever exit level is touched first wins
+        for days, pnl in snaps:
+            if pnl >= target_pct:
+                result = "win"
+                days_to_target = days
+                strategy_pnl = PROFIT_TARGET_PCT
+                break
+            if pnl <= STOP_LOSS_PCT:
+                result = "loss"
+                days_to_stop = days
+                strategy_pnl = pnl
+                break
+
+        if result is None:
+            expiry = date.fromisoformat(expiry_str)
+            if expiry <= date.today():
+                result = "loss"          # expired without reaching the target
+            else:
+                result = "open"
+            strategy_pnl = snaps[-1][1]
+
+        counts[result] += 1
+
+        strategy_pnl = round(strategy_pnl, 2)
+        unchanged = (
+            result == old_result
+            and days_to_target == old_dtt
+            and days_to_stop == old_dts
+            and old_pnl is not None
+            and abs(strategy_pnl - old_pnl) < 0.01
+        )
+        if unchanged or dry_run:
+            continue
+
+        conn.execute(
+            """
+            UPDATE spread_outcomes
+            SET strategy_result = ?, days_to_target = ?,
+                days_to_stop = ?, strategy_pnl = ?
+            WHERE id = ?
+            """,
+            (result, days_to_target, days_to_stop, strategy_pnl, outcome_id),
+        )
+        updated += 1
+        if updated % 500 == 0:
+            conn.commit()
+
+    if not dry_run:
+        conn.commit()
+
+    logger.info(
+        "Strategy outcomes: %d win / %d loss / %d open (%d rows changed) "
+        "[target=+%.0f%% after commissions, stop=%.0f%%]",
+        counts["win"], counts["loss"], counts["open"], updated,
+        PROFIT_TARGET_PCT, STOP_LOSS_PCT,
+    )
+    return updated
 
 
 def finalize_outcomes(conn: sqlite3.Connection, dry_run: bool = False) -> int:
@@ -722,12 +1155,61 @@ def _migrate(conn: sqlite3.Connection) -> None:
         ("peak_pnl_pct",        "REAL"),
         ("peak_pnl_dollars",    "REAL"),   # dollar P&L per contract at peak (pnl_pct * entry_net_debit * 100)
         ("label_source",        "TEXT"),   # interim_10d … interim_360d | expiry
+        ("strategy_result",     "TEXT"),   # win | loss | open
+        ("days_to_target",      "INTEGER"),
+        ("days_to_stop",        "INTEGER"),
+        ("strategy_pnl",        "REAL"),
+        # 1 = logged by a scan that ran while the NYSE was closed (weekend OR
+        # holiday). yfinance still answers when the market is shut, serving the
+        # previous session's closing chain: the quotes are real but the
+        # entry_date is 1-3 days late and the row is usually a near-duplicate
+        # of the prior trading day. Kept rather than deleted (the quotes are
+        # genuine) but excluded from training, backtesting and validation.
+        ("market_closed",       "INTEGER DEFAULT 0"),
     ]
+    # weekend_scan was the earlier, narrower name for this flag; holidays have
+    # the identical stale-quote problem, so it is one concept: market_closed.
+    existing = {r[1] for r in conn.execute("PRAGMA table_info(spread_outcomes)")}
+    if "weekend_scan" in existing and "market_closed" not in existing:
+        conn.execute(
+            "ALTER TABLE spread_outcomes RENAME COLUMN weekend_scan TO market_closed"
+        )
+
     for col, typedef in new_cols:
         try:
             conn.execute(f"ALTER TABLE spread_outcomes ADD COLUMN {col} {typedef}")
         except sqlite3.OperationalError:
             pass  # column already exists
+
+    # Backfill market_closed. Weekends are computable in SQL (strftime('%w') is
+    # 0=Sunday..6=Saturday); NYSE holidays are not (Good Friday needs Easter),
+    # so they come from the Python calendar. Idempotent: only touches unmarked
+    # rows, so it re-asserts cheaply on every run.
+    conn.execute("""
+        UPDATE spread_outcomes
+        SET market_closed = 1
+        WHERE COALESCE(market_closed, 0) = 0
+          AND entry_date IS NOT NULL
+          AND CAST(strftime('%w', entry_date) AS INTEGER) IN (0, 6)
+    """)
+
+    span = conn.execute(
+        "SELECT MIN(entry_date), MAX(entry_date) FROM spread_outcomes "
+        "WHERE entry_date IS NOT NULL"
+    ).fetchone()
+    if span and span[0]:
+        from backend.data.market_calendar import NYSEHolidayCalendar
+
+        import pandas as _pd
+        idx = NYSEHolidayCalendar().holidays(start=span[0], end=span[1])
+        hol = [d.date().isoformat() for d in _pd.DatetimeIndex(idx)]
+        if hol:
+            marks = ",".join("?" * len(hol))
+            conn.execute(
+                f"UPDATE spread_outcomes SET market_closed = 1 "
+                f"WHERE COALESCE(market_closed, 0) = 0 AND entry_date IN ({marks})",
+                hol,
+            )
 
     # Price snapshots table (may not exist in older DBs)
     conn.execute("""
@@ -739,16 +1221,64 @@ def _migrate(conn: sqlite3.Connection) -> None:
             current_value    REAL,
             pnl_pct          REAL,
             outcome_score    REAL,
-            data_quality     TEXT DEFAULT 'ok',  -- 'ok' | 'clamped' | 'illiquid'
+            data_quality     TEXT DEFAULT 'ok',  -- 'ok' | 'clamped'
             fetched_at       TEXT DEFAULT CURRENT_TIMESTAMP,
             UNIQUE (outcome_id, days_since_entry)
         )
     """)
-    # Migrate: add data_quality to existing DBs
-    try:
-        conn.execute("ALTER TABLE price_snapshots ADD COLUMN data_quality TEXT DEFAULT 'ok'")
-    except sqlite3.OperationalError:
-        pass  # already exists
+    # Migrate: add provenance columns to existing DBs.  The raw pre-clamp value
+    # and per-leg quotes are kept so no future question about a stored row
+    # requires re-deriving it from arbitrage reasoning.
+    snapshot_cols = [
+        ("data_quality",     "TEXT DEFAULT 'ok'"),
+        ("raw_value",        "REAL"),   # pre-clamp long_mid - short_mid
+        ("spread_width",     "REAL"),
+        ("long_bid",         "REAL"),
+        ("long_ask",         "REAL"),
+        ("long_source",      "TEXT"),   # 'quote' | 'last'
+        ("long_last_trade",  "TEXT"),
+        ("short_bid",        "REAL"),
+        ("short_ask",        "REAL"),
+        ("short_source",     "TEXT"),
+        ("short_last_trade", "TEXT"),
+        ("price_provider",   "TEXT"),
+    ]
+    for col, typedef in snapshot_cols:
+        try:
+            conn.execute(f"ALTER TABLE price_snapshots ADD COLUMN {col} {typedef}")
+        except sqlite3.OperationalError:
+            pass  # already exists
+
+    # Marks discarded by the quality gates.  Kept out of price_snapshots so the
+    # UNIQUE(outcome_id, days_since_entry) constraint there does not block a
+    # later good snapshot at the same interval.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS snapshot_rejections (
+            id               INTEGER PRIMARY KEY AUTOINCREMENT,
+            outcome_id       INTEGER NOT NULL REFERENCES spread_outcomes(id),
+            days_since_entry INTEGER NOT NULL,
+            snapshot_date    TEXT NOT NULL,
+            reason           TEXT NOT NULL,  -- 'rejected_stale' | 'rejected_bounds'
+            raw_value        REAL,
+            spread_width     REAL,
+            long_bid         REAL,
+            long_ask         REAL,
+            long_source      TEXT,
+            long_last_trade  TEXT,
+            short_bid        REAL,
+            short_ask        REAL,
+            short_source     TEXT,
+            short_last_trade TEXT,
+            price_provider   TEXT,
+            attempts         INTEGER DEFAULT 1,
+            rejected_at      TEXT DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE (outcome_id, days_since_entry)
+        )
+    """)
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_rejections_outcome "
+        "ON snapshot_rejections (outcome_id)"
+    )
 
     # Deduplicate spread_outcomes: for rows with a parseable contract_json,
     # keep only the highest-id row per (symbol, expiration, entry_date, strikes).
@@ -768,6 +1298,10 @@ def _migrate(conn: sqlite3.Connection) -> None:
     """)
     conn.execute("""
         DELETE FROM price_snapshots
+        WHERE outcome_id NOT IN (SELECT id FROM spread_outcomes)
+    """)
+    conn.execute("""
+        DELETE FROM snapshot_rejections
         WHERE outcome_id NOT IN (SELECT id FROM spread_outcomes)
     """)
 
@@ -855,6 +1389,82 @@ def repair_snapshots(conn: sqlite3.Connection, dry_run: bool = False) -> dict:
     return {"bad_snapshots_nulled": bad_count, "labels_reset": reset_count}
 
 
+def repair_clamped_snapshots(conn: sqlite3.Connection, dry_run: bool = False) -> dict:
+    """
+    Null legacy boundary-pinned snapshots written before bounds violations were
+    rejected instead of clamped.
+
+    Targets rows where data_quality='clamped' AND raw_value IS NULL -- the NULL
+    raw_value is what identifies a pre-provenance row.  Rows written by the
+    current collector keep their raw value and are only ever clamped within
+    tolerance, so they are left alone.
+
+    This is opt-in and separate from --repair because it discards a large block
+    of history: a floor-pinned row stores exactly -100% P&L, which trips the
+    -50% stop on first passage and marks the spread a loss forever, from a
+    quote that was arbitrage-impossible.
+
+    Callers must re-run labeling afterwards so outcomes are re-derived.
+
+    Returns a dict: {clamped_nulled, labels_reset, strategy_reset}
+    """
+    n = conn.execute("""
+        SELECT COUNT(*) FROM price_snapshots
+        WHERE data_quality = 'clamped' AND raw_value IS NULL
+    """).fetchone()[0]
+
+    if not n:
+        logger.info("repair_clamped: no legacy clamped rows found")
+        return {"clamped_nulled": 0, "labels_reset": 0, "strategy_reset": 0}
+
+    logger.info("repair_clamped: nulling %d legacy boundary-pinned rows", n)
+    if not dry_run:
+        conn.execute("""
+            UPDATE price_snapshots
+            SET current_value = NULL,
+                pnl_pct       = NULL,
+                outcome_score = NULL,
+                data_quality  = 'bad_data'
+            WHERE data_quality = 'clamped' AND raw_value IS NULL
+        """)
+
+    # Reset non-expiry labels AND strategy verdicts -- both are derived from the
+    # snapshots being nulled, and compute_strategy_outcomes() only recomputes
+    # rows that still have at least one non-null snapshot.
+    labels = conn.execute("""
+        SELECT COUNT(*) FROM spread_outcomes
+        WHERE label_source IS NOT NULL AND label_source != 'expiry'
+    """).fetchone()[0]
+    strategy = conn.execute(
+        "SELECT COUNT(*) FROM spread_outcomes WHERE strategy_result IS NOT NULL"
+    ).fetchone()[0]
+
+    if not dry_run:
+        conn.execute("""
+            UPDATE spread_outcomes
+            SET outcome_score    = NULL,
+                label_source     = NULL,
+                best_sell_days   = NULL,
+                peak_pnl_pct     = NULL,
+                peak_pnl_dollars = NULL
+            WHERE label_source IS NOT NULL AND label_source != 'expiry'
+        """)
+        conn.execute("""
+            UPDATE spread_outcomes
+            SET strategy_result = NULL,
+                days_to_target  = NULL,
+                days_to_stop    = NULL,
+                strategy_pnl    = NULL
+        """)
+        conn.commit()
+
+    logger.info(
+        "repair_clamped: reset %d labels and %d strategy verdicts — re-run labeling",
+        labels, strategy,
+    )
+    return {"clamped_nulled": n, "labels_reset": labels, "strategy_reset": strategy}
+
+
 def quality_audit(db_path: str = DB_PATH, window_hours: int = 24) -> dict:
     """
     Report snapshot data quality metrics and warn if the recent bad rate is high.
@@ -886,20 +1496,52 @@ def quality_audit(db_path: str = DB_PATH, window_hours: int = 24) -> dict:
         "SELECT COALESCE(data_quality,'ok'), COUNT(*) FROM price_snapshots GROUP BY data_quality"
     ).fetchall())
 
+    # Legacy boundary-pinned rows: written before bounds violations were
+    # rejected rather than clamped.  A floor clamp stores exactly -100% P&L and
+    # a ceiling clamp stores max profit, either of which permanently decides a
+    # ±50% first-passage outcome from what was an impossible quote.
+    legacy_floor = conn.execute(
+        "SELECT COUNT(*) FROM price_snapshots "
+        "WHERE data_quality = 'clamped' AND pnl_pct <= -99.9"
+    ).fetchone()[0]
+    legacy_ceiling = conn.execute(
+        "SELECT COUNT(*) FROM price_snapshots "
+        "WHERE data_quality = 'clamped' AND pnl_pct > 0 AND raw_value IS NULL"
+    ).fetchone()[0]
+
+    try:
+        rejections = dict(conn.execute(
+            "SELECT reason, COUNT(*) FROM snapshot_rejections GROUP BY reason"
+        ).fetchall())
+        recent_rejections = conn.execute(f"""
+            SELECT COUNT(*) FROM snapshot_rejections
+            WHERE rejected_at > datetime('now', '-{window_hours} hours')
+        """).fetchone()[0]
+    except sqlite3.OperationalError:
+        rejections, recent_rejections = {}, 0  # table predates this schema
+
     conn.close()
 
     bad_rate = recent_bad / recent_total if recent_total else 0.0
 
     if recent_total > 10 and bad_rate > 0.05:
         logger.warning(
-            "DATA QUALITY ALERT — bad snapshot rate in last %dh: %.1f%% (%d/%d). "
+            "DATA QUALITY ALERT — clamped snapshot rate in last %dh: %.1f%% (%d/%d). "
             "Check yfinance option chain availability or consider Schwab fallback.",
             window_hours, bad_rate * 100, recent_bad, recent_total,
         )
     else:
         logger.info(
-            "Data quality OK — last %dh: %d snapshots, %.1f%% bad",
-            window_hours, recent_total, bad_rate * 100,
+            "Snapshot quality — last %dh: %d written, %.1f%% clamped, %d rejected",
+            window_hours, recent_total, bad_rate * 100, recent_rejections,
+        )
+
+    if legacy_floor or legacy_ceiling:
+        logger.warning(
+            "LEGACY CLAMPED DATA — %d floor-pinned (-100%%) and %d ceiling-pinned "
+            "rows predate bounds rejection and still feed labels. "
+            "Run --repair-clamped to null them, then re-label.",
+            legacy_floor, legacy_ceiling,
         )
 
     return {
@@ -909,6 +1551,10 @@ def quality_audit(db_path: str = DB_PATH, window_hours: int = 24) -> dict:
         f"last_{window_hours}h_bad": recent_bad,
         f"last_{window_hours}h_bad_rate_pct": round(bad_rate * 100, 1),
         "quality_distribution": dist,
+        "legacy_floor_clamped": legacy_floor,
+        "legacy_ceiling_clamped": legacy_ceiling,
+        "rejections_all_time": rejections,
+        f"rejections_last_{window_hours}h": recent_rejections,
     }
 
 
@@ -944,6 +1590,7 @@ def label_outcomes(
             repair_result = repair_snapshots(conn, dry_run=dry_run)
         snapshots = collect_snapshots(conn, dry_run=dry_run)
         finalized = finalize_outcomes(conn, dry_run=dry_run)
+        strategy  = compute_strategy_outcomes(conn, dry_run=dry_run)
     finally:
         conn.close()
         # Log chain cache efficiency if provider supports it
@@ -955,6 +1602,7 @@ def label_outcomes(
     summary = {
         "snapshots_collected": snapshots,
         "outcomes_finalized": finalized,
+        "strategy_outcomes": strategy,
         "price_provider": _price_provider.name,
         **repair_result,
     }
@@ -1007,6 +1655,34 @@ def print_summary(db_path: str = DB_PATH) -> None:
     for src, cnt in tier_counts:
         wt = LABEL_WEIGHTS.get(src, 1.0)
         print(f"  {src:<20} {cnt:>6}  {wt:>6.2f}")
+    print(f"  {'-'*44}")
+
+    # Strategy stats (50% target / 25% stop)
+    conn2 = sqlite3.connect(db_path)
+    strat = conn2.execute("""
+        SELECT strategy_result, COUNT(*), ROUND(AVG(days_to_target), 1)
+        FROM spread_outcomes
+        WHERE strategy_result IS NOT NULL
+        GROUP BY strategy_result
+    """).fetchall()
+    if strat:
+        print(f"  {'Strategy (50/25)':<20} {'Count':>6}  {'Avg days':>6}")
+        print(f"  {'-'*44}")
+        total_strat = sum(r[1] for r in strat)
+        wins = next((r for r in strat if r[0] == 'win'), None)
+        losses = next((r for r in strat if r[0] == 'loss'), None)
+        opens = next((r for r in strat if r[0] == 'open'), None)
+        if wins:
+            print(f"  {'win':<20} {wins[1]:>6}  {wins[2] or 0:>6}")
+        if losses:
+            print(f"  {'loss':<20} {losses[1]:>6}  {'':>6}")
+        if opens:
+            print(f"  {'open':<20} {opens[1]:>6}  {'':>6}")
+        win_count = wins[1] if wins else 0
+        decided = win_count + (losses[1] if losses else 0)
+        if decided > 0:
+            print(f"  {'Win rate':<20} {win_count/decided*100:>5.1f}%")
+    conn2.close()
     print(f"{'='*w}\n")
 
 
@@ -1041,6 +1717,15 @@ if __name__ == "__main__":
         action="store_true",
         help="Print snapshot data quality audit and exit.",
     )
+    parser.add_argument(
+        "--repair-clamped",
+        action="store_true",
+        help=(
+            "Null LEGACY boundary-pinned snapshots (pre-provenance 'clamped' rows) "
+            "and reset all derived labels. Destructive and large — run --audit first, "
+            "then re-run labeling afterwards."
+        ),
+    )
     args = parser.parse_args()
 
     if args.summary:
@@ -1053,7 +1738,23 @@ if __name__ == "__main__":
         print(f"  Last 24h total:        {result['last_24h_total']}")
         print(f"  Last 24h bad:          {result['last_24h_bad']}  ({result['last_24h_bad_rate_pct']}%)")
         print(f"  Quality distribution:  {result['quality_distribution']}")
+        print(f"  Legacy floor-pinned:   {result['legacy_floor_clamped']}  (stored as -100% P&L)")
+        print(f"  Legacy ceiling-pinned: {result['legacy_ceiling_clamped']}")
+        print(f"  Rejections all-time:   {result['rejections_all_time'] or '{}'}")
+        print(f"  Rejections last 24h:   {result['rejections_last_24h']}")
         print()
+    elif args.repair_clamped:
+        conn = sqlite3.connect(args.db_path, timeout=60)
+        conn.execute("PRAGMA journal_mode=WAL")
+        _migrate(conn)
+        res = repair_clamped_snapshots(conn, dry_run=args.dry_run)
+        conn.close()
+        tag = " (DRY RUN)" if args.dry_run else ""
+        print(
+            f"\nrepair-clamped{tag}: {res['clamped_nulled']} snapshots nulled, "
+            f"{res['labels_reset']} labels and {res['strategy_reset']} strategy "
+            f"verdicts reset.\nRe-run labeling to re-derive them.\n"
+        )
     else:
         result = label_outcomes(args.db_path, dry_run=args.dry_run, repair=args.repair)
         tag = " (DRY RUN)" if args.dry_run else ""

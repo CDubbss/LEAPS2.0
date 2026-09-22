@@ -38,6 +38,10 @@ class SpreadConstructor:
                 )
             elif strategy == SpreadType.BEAR_PUT:
                 spreads.extend(self._build_bear_put_spreads(puts, spot_price))
+            elif strategy == SpreadType.LEAPS_SPREAD_PUT:
+                spreads.extend(
+                    self._build_bear_put_spreads(puts, spot_price, SpreadType.LEAPS_SPREAD_PUT)
+                )
             elif strategy == SpreadType.LEAP_CALL:
                 spreads.extend(self._build_leaps(calls, spot_price, SpreadType.LEAP_CALL))
             elif strategy == SpreadType.LEAP_PUT:
@@ -119,7 +123,10 @@ class SpreadConstructor:
         return spreads
 
     def _build_bear_put_spreads(
-        self, puts: list[OptionQuote], spot: float
+        self,
+        puts: list[OptionQuote],
+        spot: float,
+        spread_type: SpreadType = SpreadType.BEAR_PUT,
     ) -> list[SpreadCandidate]:
         """
         Bear Put Spread: long higher-strike put + short lower-strike put.
@@ -167,7 +174,7 @@ class SpreadConstructor:
                     spreads.append(
                         SpreadCandidate(
                             underlying=long_leg.underlying,
-                            spread_type=SpreadType.BEAR_PUT,
+                            spread_type=spread_type,
                             expiration=expiry,
                             dte=dte,
                             long_leg=long_leg,

@@ -2,7 +2,7 @@ import React, { useState } from "react";
 import { useScannerStore } from "@/store/scannerStore";
 import type { SpreadType } from "@/types";
 import { SPREAD_TYPE_LABELS } from "@/types";
-import { ScanIcon, RotateCcw, Plus, X } from "lucide-react";
+import { ScanIcon, RotateCcw, Plus, X, Save, Trash2 } from "lucide-react";
 import { InfoTooltip } from "@/components/ui/Tooltip";
 import { TOOLTIPS } from "@/utils/tooltips";
 
@@ -10,6 +10,7 @@ const STRATEGY_OPTIONS: SpreadType[] = [
   "leap_call",
   "leap_put",
   "leaps_spread_call",
+  "leaps_spread_put",
   "earnings_call",
   "earnings_put",
 ];
@@ -25,9 +26,19 @@ const INDEX_GROUPS: { key: string; label: string }[] = [
 const PRESET_WIDTHS = [5, 10, 15, 20];
 
 export const FilterPanel: React.FC = () => {
-  const { filters, setFilters, resetFilters, runScan, isLoading } =
-    useScannerStore();
+  const {
+    filters, setFilters, resetFilters, runScan, isLoading,
+    presets, savePreset, applyPreset, deletePreset,
+  } = useScannerStore();
   const [symbolInput, setSymbolInput] = useState("");
+  const [selectedPreset, setSelectedPreset] = useState("");
+
+  const handleSavePreset = () => {
+    const name = window.prompt("Preset name", selectedPreset || "My preset");
+    if (!name?.trim()) return;
+    savePreset(name.trim());
+    setSelectedPreset(name.trim());
+  };
 
   const toggleStrategy = (strategy: SpreadType) => {
     const current = filters.strategies;
@@ -64,6 +75,47 @@ export const FilterPanel: React.FC = () => {
       </div>
 
       <div className="flex-1 p-4 space-y-6">
+        {/* Filter presets */}
+        <div>
+          <label className="block text-sm font-medium text-gray-300 mb-2">
+            Presets
+          </label>
+          <div className="flex gap-1.5">
+            <select
+              value={selectedPreset}
+              onChange={(e) => {
+                setSelectedPreset(e.target.value);
+                if (e.target.value) applyPreset(e.target.value);
+              }}
+              className="flex-1 bg-gray-800 border border-gray-600 text-white text-xs rounded px-2 py-1.5 focus:outline-none focus:border-sky-500"
+            >
+              <option value="">— load a preset —</option>
+              {Object.keys(presets).sort().map((name) => (
+                <option key={name} value={name}>{name}</option>
+              ))}
+            </select>
+            <button
+              onClick={handleSavePreset}
+              className="p-1.5 rounded bg-gray-800 border border-gray-600 text-gray-300 hover:border-sky-500 hover:text-white transition-colors"
+              title="Save current filters as a preset"
+            >
+              <Save size={14} />
+            </button>
+            {selectedPreset && presets[selectedPreset] && (
+              <button
+                onClick={() => {
+                  deletePreset(selectedPreset);
+                  setSelectedPreset("");
+                }}
+                className="p-1.5 rounded bg-gray-800 border border-gray-600 text-gray-400 hover:border-red-500 hover:text-red-400 transition-colors"
+                title="Delete this preset"
+              >
+                <Trash2 size={14} />
+              </button>
+            )}
+          </div>
+        </div>
+
         {/* Universe / Index Groups */}
         <div>
           <label className="block text-sm font-medium text-gray-300 mb-2">

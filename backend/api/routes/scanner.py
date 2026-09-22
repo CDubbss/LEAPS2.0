@@ -3,6 +3,8 @@
 import asyncio
 import json
 import logging
+import os
+import sqlite3
 import uuid
 from typing import Literal, Optional
 
@@ -100,3 +102,79 @@ async def get_default_universe() -> list[str]:
 async def get_default_filters() -> ScannerFilters:
     """Return default filter configuration."""
     return ScannerFilters()
+
+
+# ---------------------------------------------------------------------------
+# Filter presets — stored server-side in SQLite so they survive browser data
+# clearing and are shared across origins (dev 5173, built app on 8001).
+# ---------------------------------------------------------------------------
+
+# Dedicated tiny DB — the ML outcomes DB takes long write locks during
+# labeling runs, which would stall (or 500) these lightweight UI reads.
+_PRESETS_DB = "backend/data/ui_presets.db"
+_PRESET_NAME_MAX = 60
+
+
+def _presets_conn() -> sqlite3.Connection:
+    os.makedirs(os.path.dirname(_PRESETS_DB), exist_ok=True)
+    conn = sqlite3.connect(_PRESETS_DB, timeout=30)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS ui_presets (
+            name         TEXT PRIMARY KEY,
+            filters_json TEXT NOT NULL,
+            updated_at   TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    return conn
+
+
+def _presets_read() -> dict[str, dict]:
+    with _presets_conn() as conn:
+        rows = conn.execute("SELECT name, filters_json FROM ui_presets ORDER BY name").fetchall()
+    out = {}
+    for name, fj in rows:
+        try:
+            out[name] = json.loads(fj)
+        except json.JSONDecodeError:
+            logger.warning("Corrupt preset %r skipped", name)
+    return out
+
+
+@router.get("/presets")
+async def list_presets() -> dict[str, dict]:
+    """All saved filter presets, keyed by name."""
+    return await asyncio.to_thread(_presets_read)
+
+
+@router.put("/presets/{name}")
+async def save_preset(name: str, filters: ScannerFilters) -> dict:
+    """Create or overwrite a named preset."""
+    name = name.strip()
+    if not name or len(name) > _PRESET_NAME_MAX:
+        raise HTTPException(422, f"Preset name must be 1-{_PRESET_NAME_MAX} characters")
+
+    def _write() -> None:
+        with _presets_conn() as conn:
+            conn.execute(
+                "INSERT INTO ui_presets (name, filters_json, updated_at) "
+                "VALUES (?, ?, CURRENT_TIMESTAMP) "
+                "ON CONFLICT(name) DO UPDATE SET "
+                "  filters_json = excluded.filters_json, "
+                "  updated_at = CURRENT_TIMESTAMP",
+                (name, json.dumps(filters.model_dump(mode="json"))),
+            )
+
+    await asyncio.to_thread(_write)
+    return {"saved": name}
+
+
+@router.delete("/presets/{name}", status_code=204)
+async def delete_preset(name: str) -> None:
+    """Delete a named preset."""
+    def _delete() -> int:
+        with _presets_conn() as conn:
+            return conn.execute("DELETE FROM ui_presets WHERE name = ?", (name,)).rowcount
+
+    if await asyncio.to_thread(_delete) == 0:
+        raise HTTPException(404, f"Preset '{name}' not found")
