@@ -2,7 +2,7 @@
 
 > **Read this first.** Full context for an AI assistant or maintainer picking this project up cold.
 > Every factual claim here was verified against the codebase / database at the time of writing.
-> **Last updated: 2026-09-18.**
+> **Last updated: 2026-09-21.**
 >
 > **Companion context files** (read alongside this):
 > - `CLAUDE.md` (repo root) — how the assistant should communicate. Neutral, direct, trade-offs surfaced, no cheerleading.
@@ -42,7 +42,7 @@ Buy a lower-strike call, sell a higher-strike call, **same expiration**, 12+ mon
 
 | Layer | Tech |
 |---|---|
-| Backend | Python 3.11, FastAPI, Uvicorn — port **8001** (8000 is reserved for a different project on this machine) |
+| Backend | Python 3.14 (`backend/.venv` is 3.14.2 — earlier docs said 3.11; corrected 2026-09-21), FastAPI, Uvicorn — port **8001** (8000 is reserved for a different project on this machine) |
 | Frontend | React 18 + TypeScript + Vite (**5173**) + Tailwind (dark theme), Zustand state |
 | Options data | yfinance (free, ~15-min delayed). Schwab exists for chains but is **excluded from the labeler** (OAuth retry hazard, §6) |
 | Fundamentals | Financial Modeling Prep — key in `backend/.env`, **never commit**. Free tier: several endpoints return 402 |
@@ -118,7 +118,7 @@ Classifier AUC (since the honest ±50% relabel): `… → 0.867 → 0.873 → 0.
 
 **Backtest** (regenerated 2026-09-17, clean model): notional-matched edge **+$156,398, p=0.0001** (z=+22.2, 10k bootstrap) — up the ladder $116k → $142k → $156k as contamination was removed. Decile lift +23.8; overall rho +0.139; 2026-08/09 rank-corr +0.216 / +0.183; interim_45d flipped **−0.16 → +0.13** post-purge. **Top decile now nearly calibrated** (predicts 70.4, realizes 69.4, gap −1.0) at a 63% win rate — the middle band (55–60, deciles 7–9) still sags, which is era pooling (§4.1), not clamps. The legacy 1-contract statistic the dashboard renders is now **+2.63σ** (significant on its own for the first time) but still the wrong units — see §4.8 / §9 #2.
 
-**Git**: on branch `feat/ted-positions-data-bolstering`. Working tree has **substantial uncommitted work**: `validate.py`, `market_calendar.py`, the market-closed migration, `train.py` OOM-hardening (§6), the clean **2026-09-16 artifacts** (post-§4.7-purge), a **Positions mid-to-mid pricing fix** (§5), and frontend UI work (ML-dashboard chart rework + dynamic scanner columns/cards). DB backup `spread_outcomes.backup_20260916.db` is local/untracked. `main` is stale since 2026-06-18. **PR not yet opened — this is a lot of unpushed work; committing soon is advisable.**
+**Git**: on branch `feat/ted-positions-data-bolstering`. Working tree has **substantial uncommitted work**: `validate.py`, `market_calendar.py`, the market-closed migration, `train.py` OOM-hardening (§6), the clean **2026-09-16 artifacts** (post-§4.7-purge), a **Positions mid-to-mid pricing fix** (§5), and frontend UI work (ML-dashboard chart rework + dynamic scanner columns/cards). DB backup `spread_outcomes.backup_20260916.db` is local/untracked. `main` is stale since 2026-06-18. **Update 2026-09-21:** all of the above is committed and pushed; **PR [#7](https://github.com/CDubbss/LEAPS2.0/pull/7) is open** (`feat/ted-positions-data-bolstering` → `main`), and the Tier-1 dependency patches (§8) were added on top (commit `4f3a1d1`). `main` stays stale until #7 merges.
 
 ---
 
@@ -360,6 +360,8 @@ Chain viewer with sticky strike column and ATM highlighting.
 
 **2026-09-17 — clean-model validation.** Fresh backtest + `validate.py`: **11 PASS · 3 FAIL · 3 WARN**; notional-matched edge **+$156,398, p=0.0001, z=+22.2** (strongest yet); N1 shuffle clean (z=−0.23); interim_45d rank-corr flipped positive; top decile near-calibrated (gap −1.0). Confirmed the clamps had been *depressing* the model (AUC rose post-purge). Remaining FAILs (H3/H4b/I2) are structural, not clamp-related. Surfaced §4.9 (fundamentals ~98% NaN in recent rows). Committed the accumulated work (`9d90d59`), then closed §9 #2: the `/backtest-report` endpoint now merges validate.py's notional-matched edge + p-value + freshness, and `BacktestReportSection.tsx` headlines the honest number with a staleness badge (the 1-contract sim is demoted to "illustrative").
 
+**2026-09-21 — PR opened + Tier-1 dependency patches.** Opened **PR #7** (`feat/ted-positions-data-bolstering` → `main`) via the GitHub REST API — `gh` still isn't installed, so reused the Git Credential Manager token directly. Then patched 5 of the §8 Tier-1 advisories and pinned them in `requirements.txt`: cryptography 46.0.5→50.0.1, requests 2.32.5→2.34.2, urllib3 2.6.3→2.8.0, idna 3.11→3.20, authlib 1.6.9→1.8.0; `npm audit fix` (no `--force`) cut production npm vulns **7→2** (transitive lodash/form-data/follow-redirects). Validated: **32/32 pytest**, frontend typecheck clean, `pip check` clean, plus a Fernet-roundtrip / Authlib / `schwab_client` import smoke. **curl-cffi could not be upgraded** — yfinance 1.2.0 caps it at `<0.14` and no patched release exists below 0.14, so §8's "0.15.0" target was itself incompatible; reverted to 0.13.0 and deferred to a coordinated yfinance bump. Also verified the venv is **Python 3.14.2** (this file previously said 3.11). Commit `4f3a1d1`, on PR #7.
+
 ---
 
 ## 8. Dependency security triage (2026-07-30)
@@ -386,9 +388,9 @@ cd frontend && npm audit --omit=dev     # only what ships to the browser
 | `urllib3` | 2.6.3 | 2.7.0 | 3 advisories; all outbound HTTP (FMP / yfinance / Schwab) |
 | `requests` | 2.32.5 | 2.33.0 | outbound HTTP |
 | `idna` | 3.11 | 3.15 | domain parsing in the requests path |
-| `curl-cffi` | 0.13.0 | 0.15.0 | yfinance's HTTP transport |
-| `authlib` | 1.6.9 | 1.6.12 | 4 advisories; Schwab OAuth flow |
-| `axios` (npm) | direct dep | `npm audit fix` | 3 high; ships to the browser, used by `api/client.ts` |
+| `curl-cffi` | 0.13.0 | ~~0.15.0~~ **BLOCKED** | yfinance's HTTP transport. **yfinance 1.2.0 pins `curl_cffi<0.14`, and no patched release exists below 0.14 — so 0.15.0 is incompatible (the original target was wrong). Deferred to a coordinated yfinance bump (verified 2026-09-21).** |
+| `authlib` | ~~1.6.9~~ **1.8.0** | done | 4 advisories; Schwab OAuth flow. **Patched + pinned 2026-09-21.** |
+| `axios` (npm) | ~~direct dep~~ **already 1.13.5** | — | Flagged 2026-07-30; the installed version is no longer vulnerable (verified 2026-09-21). |
 
 ### Tier 2 — present but not reachable in this app
 - **`python-multipart` (5)** — FastAPI form/multipart parsing. Every endpoint here is JSON; no multipart routes exist.
@@ -413,7 +415,7 @@ cd frontend && npm audit --omit=dev     # only what ships to the browser
 3. starlette + FastAPI as a separate, deliberate upgrade with a full scan + Ted + positions regression pass.
 4. Tier 3 whenever convenient; `vite` is the only one worth doing soon.
 
-**Triage only — no packages upgraded.**
+**Update 2026-09-21 — Tier-1 patched** (commit `4f3a1d1`, on PR #7). Upgraded and pinned in `requirements.txt`: cryptography 46.0.5→50.0.1, requests 2.32.5→2.34.2, urllib3 2.6.3→2.8.0, idna 3.11→3.20, authlib 1.6.9→1.8.0. `npm audit fix` (no `--force`) applied — production npm vulns **7→2**; axios was already non-vulnerable (1.13.5). Validated with 32/32 pytest + typecheck + import smoke + `pip check`. **Still open / deliberately deferred:** curl-cffi (blocked by the yfinance `<0.14` cap — needs a yfinance bump), starlette/FastAPI (deliberate major jump), and vite/react-router-dom (both require `npm audit fix --force`, breaking). Note: the live backend on :8001 only picks up the new packages after a restart.
 
 ---
 
@@ -423,8 +425,8 @@ cd frontend && npm audit --omit=dev     # only what ships to the browser
 2. **~~Fix the ML dashboard's edge figure~~ — DONE 2026-09-17.** `/api/v1/ml/backtest-report` now merges in validate.py's **notional-matched edge + p-value** (read from `validation_report.json` → `sections.honest.H1_notional_matched`) plus the within-day shuffle-control z and a `report_age_days`. `BacktestReportSection.tsx` headlines the **risk-normalized** figure ($156,398, p=0.0001), demotes the 1-contract sim to an explicitly-labeled *"illustrative — debit-scaled ~100×"* line, and shows an amber **"stale — regenerate"** badge when the report is >7 days old. Frontend rebuilt so it ships on :8001 after a restart. *(Still a static artifact — the badge surfaces staleness rather than auto-regenerating; a regenerate-on-read endpoint remains a possible follow-up.)*
 3. **Gate on quote staleness** (§5) — `last_trade` is already recorded on every snapshot from yfinance's `lastTradeDate`; nothing reads it yet. Rejecting quotes older than a threshold is the natural follow-on to atomic pair pricing and needs no new data. *(Queued 2026-09-18 → "Data integrity at scale" B.)*
 4. **Fix `backtest.py` era segmentation** (§4.1) — makes every report section as trustworthy as the simulation already is. *(Queued 2026-09-18 → "Data integrity at scale" E.)*
-5. **Open the PR** — branch `feat/ted-positions-data-bolstering` is committed and **pushed** (2026-09-18); the PR itself is not yet created because `gh` CLI isn't installed on this box. Open it from the compare URL (`.../compare/main...feat/ted-positions-data-bolstering?expand=1`) or `winget install GitHub.cli` then `gh pr create`. `main` still stale since 2026-06-18.
-6. **Patch Tier 1 dependencies** (§8) — 7 non-breaking upgrades; leave starlette/FastAPI deliberate.
+5. **~~Open the PR~~ — DONE 2026-09-21.** PR [#7](https://github.com/CDubbss/LEAPS2.0/pull/7) is open (`feat/ted-positions-data-bolstering` → `main`), created via the GitHub REST API reusing the Git Credential Manager token (`gh` still not installed). `main` stays stale since 2026-06-18 until #7 is reviewed and merged.
+6. **~~Patch Tier-1 dependencies~~ — MOSTLY DONE 2026-09-21** (§8, commit `4f3a1d1` on PR #7). Upgraded + pinned cryptography/requests/urllib3/idna/authlib; `npm audit fix` (prod npm vulns 7→2); axios was already non-vulnerable. **Still open:** curl-cffi (blocked by yfinance `<0.14`, needs a yfinance bump), starlette/FastAPI (deliberate major jump), vite/react-router-dom (`--force`, breaking).
 7. **Wait for label maturity** — the current model's first honest verdict arrives ~Oct 1 (60-day labels on July entries). Retrain weekly meanwhile; **don't over-read weekly MSE wiggles** (the 244–260 band has been noise for a month). Note §4.7: long-horizon labels are the most clamp-affected, so mature-tier counts will come in lower than previously projected once quotes are gated properly.
 8. **Keep collecting bear + regime data** — unevaluable until a regime shift or ~1,000 decided bear outcomes.
 9. **Deferred ideas**: EV-based ranking (expected annualized return per dollar risked), P(touch +50%) first-passage math to replace the Black-Scholes PoP, market-regime entry gate, position-sizing guidance, exit-by alerts, a "Top 10%" badge in the results table driven by a live per-model percentile cutoff, and a **resumable Optuna study** (SQLite `storage=` + `load_if_exists`) so a crashed/killed HPO run resumes instead of restarting from trial 0 (§6).
