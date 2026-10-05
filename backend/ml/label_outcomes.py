@@ -64,6 +64,17 @@ Usage
     python -m backend.ml.label_outcomes --db-path path/to/db
 """
 
+# UTF-8 stdout/stderr guard (HANDOFF §6): print_summary() emits box-drawing (─)
+# glyphs that crash with UnicodeEncodeError under a cp1252 Windows console or a
+# redirected log. Force UTF-8 at import, before any summary is printed.
+# errors="replace" is a belt-and-suspenders fallback.
+import sys as _sys
+for _stream in (_sys.stdout, _sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 import argparse
 import json
 import logging

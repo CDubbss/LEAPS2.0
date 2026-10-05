@@ -29,6 +29,16 @@ _PROJECT_ROOT = Path(__file__).parent.parent.parent
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
+# UTF-8 stdout/stderr guard (HANDOFF §6): the "Scan complete: N candidates -> M"
+# log line (and any box-drawing output) crashes with UnicodeEncodeError under a
+# cp1252 Windows console or a redirected log. Force UTF-8 before logging is set
+# up. errors="replace" is a belt-and-suspenders fallback.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 from backend.data.market_calendar import market_closed_reason  # noqa: E402
 
 LOG_DIR = _PROJECT_ROOT / "logs" / "scheduled_scans"

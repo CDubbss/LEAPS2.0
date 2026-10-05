@@ -44,6 +44,17 @@ import numpy as np
 import pandas as pd
 from scipy.stats import spearmanr
 
+# UTF-8 stdout/stderr guard (HANDOFF §6): the PASS/FAIL scorecard prints box
+# drawing (─) and arrow glyphs; force UTF-8 so a cp1252 console or a redirected
+# log does not raise UnicodeEncodeError. Must run before basicConfig builds its
+# handler. errors="replace" is a belt-and-suspenders fallback.
+import sys as _sys
+for _stream in (_sys.stdout, _sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 logger = logging.getLogger(__name__)
 
