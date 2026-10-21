@@ -2,7 +2,7 @@
 
 > **Read this first.** Full context for an AI assistant or maintainer picking this project up cold.
 > Every factual claim here was verified against the codebase / database at the time of writing.
-> **Last updated: 2026-10-05.**
+> **Last updated: 2026-10-20.**
 >
 > **Companion context files** (read alongside this):
 > - `CLAUDE.md` (repo root) — how the assistant should communicate. Neutral, direct, trade-offs surfaced, no cheerleading.
@@ -69,17 +69,19 @@ Plain `python -m ...` uses system Python and fails with `ModuleNotFoundError: pa
 
 ---
 
-## 3. Current state (2026-10-05)
+## 3. Current state (2026-10-20)
 
-**Models** — retrained **2026-10-04** (overnight) on the current population; the first retrain since July entries began crossing into 60-day labels (§4.2).
+**Models** — retrained **2026-10-20** (evening local; artifacts stamped 2026-10-21 UTC) on the current population. Prior retrain 2026-10-04.
 | Artifact | Trained | Samples | Metric |
 |---|---|---|---|
-| `spread_ranker.joblib` | 2026-10-05 02:36 UTC | 72,096 | Weighted MSE **220.7** |
-| `strategy_classifier.joblib` | 2026-10-05 02:48 UTC | 30,896 decided | AUC **0.855** · win 32.6% |
+| `spread_ranker.joblib` | 2026-10-21 04:37 UTC | 83,439 | Weighted MSE **232.4** |
+| `strategy_classifier.joblib` | 2026-10-21 04:48 UTC | 37,225 decided | AUC **0.859** · win 33.4% |
+
+**2026-10-20 retrain vs 10-04:** ranker 72,096 → 83,439 rows (MSE 220.7 → 232.4, still not comparable across populations); classifier 30,896 → 37,225 decided (12,437 wins / 24,788 losses), **AUC 0.855 → 0.859** — the first uptick since the 0.880 peak, so the maturity-driven slide looks to have stopped. Win rate 32.6% → 33.4%. Breakeven under symmetric ±50% exits is 50%, so the base rate (~33%) means only selectivity pays.
 
 ⚠️ **AUC fell 0.880 → 0.855 and win rate 36.5% → 32.6% vs the 2026-09-16 run — this is expected maturity, not regression.** `interim_60d` jumped from ~14k to ~26.6k rows, so genuinely mature labels (the dirtiest per §4.7, as aged LEAPS lose two-sided markets) are replacing the short-horizon set that inflated 0.880. Treat it as a more honest number. Weighted MSE (187.8 → 220.7) is **not comparable** across these different populations (see caveat below). **Crucially, the validated selection edge *grew* over the same period — $156k → $182k (Validation/Backtest below).**
 
-*(Prior runs: 2026-09-16 (first clean, post-§4.7-purge) ranker 187.8/63,325, classifier 0.880/21,052 win 36.5%; 2026-08-26 ranker 208.0/49,697, classifier 0.865/15,035. The 09-16 purge removed ~21.7k false snapshots and lifted AUC 0.856 → 0.880; the 10-04 softening is a different effect — label maturity, not label noise.)*
+*(Prior runs: 2026-10-04 ranker 220.7/72,096, classifier 0.855/30,896 win 32.6%; 2026-09-16 (first clean, post-§4.7-purge) ranker 187.8/63,325, classifier 0.880/21,052 win 36.5%; 2026-08-26 ranker 208.0/49,697, classifier 0.865/15,035. The 09-16 purge removed ~21.7k false snapshots and lifted AUC 0.856 → 0.880; the 10-04 softening is a different effect — label maturity, not label noise.)*
 
 Progression across the data-hygiene fixes (each column is a different population):
 
@@ -107,18 +109,19 @@ The *win rate* is the more trustworthy trend (25.6% → 29.3% → 29.8% → 32.5
 MSE trajectory: `451.6 → … → 235.2 → 240.3 → 236.0 → 212.4 → 208.0 → 199.5 → 187.8*` (*populations differ, and 187.8 is on de-contaminated labels; see caveat)
 Classifier AUC (since the honest ±50% relabel): `… → 0.867 → 0.873 → 0.865 → 0.856 → 0.880*` (*0.880 = first clean-data run; the 0.873→0.856 slide was accumulating clamped noise, reversed by the purge)
 
-**Database** (2026-10-05): **95,800 rows** | ~1.00M snapshots | **15,374 flagged `market_closed`** (13,348 weekend + 2,026 NYSE holiday, excluded everywhere — count unchanged, guard holding) | 131 `expiry` ground-truth rows.
-**Outcome census** (validate.py I7, 2026-10-05): `win 12,133 · loss 26,129 · open 48,799 · unlabeled 8,739` — **39.9% decided** (38,262 of 95,800).
-**Strategy outcome split**: **31.7%** decided win rate (validate.py D2). The drop from 35.3% (2026-09-17) is label maturity — positions resolving as losses as they age into 60d+ tiers, plus the market downturn (§4.3) — not contamination (the §4.7 purge holds).
+**Database** (2026-10-20): **109,720 rows** | ~1.18M snapshots | **15,374 flagged `market_closed`** (13,348 weekend + 2,026 NYSE holiday, excluded everywhere — count unchanged, guard holding) | 198 `expiry` ground-truth rows.
+**Outcome census** (validate.py I7, 2026-10-20): `win 14,601 · loss 30,336 · open 53,222 · NULL 11,561` — **41.0% decided** (44,937 of 109,720). Label tiers (label_outcomes, 10-20): `interim_5d` 3,410 · `10d` 10,756 · `21d` 5,323 · `30d` 10,019 · `45d` 17,984 · `60d` 28,267 · `90d` 22,200 · `expiry` 198.
+**Strategy outcome split**: **32.5%** decided win rate (validate.py D2, 2026-10-20; was 31.7% on 10-05). The HANDOFF-era "~25.4%" figure is the old contaminated number — ignore it. The drop from 35.3% (2026-09-17) is label maturity — positions resolving as losses as they age into 60d+ tiers, plus the market downturn (§4.3) — not contamination (the §4.7 purge holds).
 **Snapshot quality**: **clamped history PURGED 2026-09-16** — the 21,701 legacy boundary-pinned rows were nulled and every label re-derived from clean snapshots (§4.7). 22,341 snapshots now carry NULL values (21,701 clamped + ~640 pre-existing bad-data). Backup at `backend/ml/data/spread_outcomes.backup_20260916.db`.
 
 **The market-closed guard is confirmed working in production.** Four consecutive trading days (Aug 11–14) logged 1,170 / 908 / 1,278 / 1,080 rows, all correctly unflagged; Sat Aug 15 and Sun Aug 16 logged **zero**. The `market_closed` count has not moved off 15,374 since the backfill. Aug 11–14 is also the first stretch collected under **both** atomic pair pricing (§4.7) and the market guard.
 
 **Label-tier census (2026-09-16, clean re-label)**: `interim_5d` 2,268 · `interim_10d` 13,288 · `interim_21d` 8,747 · `interim_30d` 14,984 · `interim_45d` 15,449 · `interim_60d` 14,257 · `interim_90d` 8,780 · `expiry` 126. Mature tiers (60d+) have finally populated in quantity — but per §4.2 / H4b they are still dominated by older-model entries (interim_90d spans 2026-03…05), so **not yet a clean read on the current model** (that arrives as July+ entries mature, ~Oct).
 
-**Validation status** (`validate.py --json`, **2026-10-05**, current model): **11 PASS · 3 FAIL · 3 WARN · 5 INFO** — same shape as 2026-09-17, **no new failures**. Failing (all structural, *not* clamp-related): H3 (decile resolution 30%–71%, a score-dependent censoring artifact), H4b (tier/era confound, 7/8 tiers span ≤2 entry months — **now the binding constraint on a clean per-model verdict**), I2 (`sector_relative_strength` dead). Notional-matched edge **+$182,342, p=0.0001** (z=+23.5, 10k bootstrap) — **up from $156,398 on 09-17**, i.e. the selection edge strengthened on the larger/more-mature/partly-bear population even as classifier AUC softened. Negative control clean (N1 within-day shuffle z=−0.91, p=0.81); N2 debit-matched z=+4.40; reconciliation exact (0.000%). New **WARN I2b**: the 4 regime features are ~100% NaN in the oldest rows, so XGBoost can learn "feature present" as a date/era proxy. *(fast mode — the N3/N4/H5 retrain controls need `--slow`.)*
+**Validation status** (`validate.py --json`, **2026-10-20**, current model, fast mode): **11 PASS · 3 FAIL · 3 WARN · 5 INFO** — same shape as 10-05 and 09-17, **no new failures**. Failing (structural, *not* clamp-related): H3 (decile resolution 30%–73%, score-dependent censoring), H4b (tier/era confound, 6/8 tiers span ≤2 entry months — improved from 7/8 but still **the binding constraint on a clean per-model verdict**), I2 (`sector_relative_strength` dead in newest 20k rows). WARN: I2b (4 regime features ~100% NaN in oldest rows → XGBoost can learn a date proxy), H2 (legacy hit-rate denominator over-counts 9%, calendar vs business days), D1 (published vs corrected edge are in different units).
+Notional-matched edge **+$188,935, p=0.0001** (z=+22.9, 10k bootstrap) — up from $182,342 (10-05) and $156,398 (09-17). Fix-attribution ladder: legacy $122k (z+2.67) → excl. near-miss $119k → notional-matched $186k → 10k-iter bootstrap $189k; the legacy backtest *understated* the edge. Controls: N1 within-day shuffle clean (edge −$7.8k, z=−0.97, p=0.84); N2 debit-matched edge $54k, z=+3.9, p=0.001; reconciliation exact (R1, $43,323 both sides, 0.000%). H4 mature-tier rho +0.889 but n=198 only. *(N3/N4/H5 retrain controls need `--slow` — not run.)*
 
-**Backtest** (regenerated 2026-10-04, current model): the top-3-per-day **simulation surfaced a regime signal** — model total P&L **−$291** (81% win) vs random baseline **−$70,132** (12.9% win). Previously the model sim was ~+$152k and random modestly positive; **random going deeply negative means the broad spread population lost money in the recent window — the first apparent market downturn in the data** (§4.3, §9 #8). The same-day/same-era selection edge is fully intact (the model avoided the losses random took); absolute returns went negative with the market. Decile 10 (top) still clearly best: 51.5% win, outcome mean 62.2, peak P&L +284%. `interim_60d` rank-corr came in **−0.19** (n≈18k) — the mature tier's first real read is negative, but it is the §4.1 era-pooling + §4.7 dirty-mature-label confound, **not** a clean verdict; recent entry months are strong (2026-09 rho **+0.32**, 2026-08 +0.21). The notional-matched edge (the trustworthy number) rose to **+$182,342** regardless — see Validation above.
+**Backtest** (regenerated 2026-10-20, current model): top-3-per-day simulation — model **+$44,757** (423 trades, **84.4% win**, 17.6d avg hold, 66 unrealized, **max drawdown $64,329**) vs random baseline **−$83,618 ± $53,834** (20.9% win) → ≈$128k, ~2.4σ. Random remains deeply negative (the §4.3 downturn regime persists); the model's absolute P&L turned positive again vs −$291 on 10-04. **Only the top slice separates:** decile 10 = 70.1% win, peak P&L +$391; deciles 2–9 are flat/inverted (decile 9 win 21.6% < decile 2 25.5%). Quintile hit-rates at 30–90d: top ~28–29%, Q1 5–11%, Q2–Q4 roughly flat — the model works as a top-slice picker, not a smooth ranker (deciles still era-pooled, §4.1). **Rank correlation by entry month:** overall +0.162; 2026-09 +0.386, 08 +0.204, 07 +0.049, 06 −0.003, **10 −0.019 (p=0.052)**; by tier 5d −0.126, 10d +0.19, 21d +0.47, 60d +0.067. October rows are only 5–10d old (the 5d tier is historically negative), so this is probably immaturity, but it cannot be ruled out as no skill on recent entries until those rows reach 30–45d labels (~early–mid Nov).
 
 **Git**: on branch `feat/ted-positions-data-bolstering`. Working tree has **substantial uncommitted work**: `validate.py`, `market_calendar.py`, the market-closed migration, `train.py` OOM-hardening (§6), the clean **2026-09-16 artifacts** (post-§4.7-purge), a **Positions mid-to-mid pricing fix** (§5), and frontend UI work (ML-dashboard chart rework + dynamic scanner columns/cards). DB backup `spread_outcomes.backup_20260916.db` is local/untracked. `main` is stale since 2026-06-18. **Update 2026-09-21:** all of the above is committed and pushed; **PR [#7](https://github.com/CDubbss/LEAPS2.0/pull/7) is open** (`feat/ted-positions-data-bolstering` → `main`), and the Tier-1 dependency patches (§8) were added on top (commit `4f3a1d1`). `main` stays stale until #7 merges.
 
@@ -369,6 +372,8 @@ Chain viewer with sticky strike column and ATM highlighting.
 
 **2026-10-04/05 — overnight retrain + backtest, then clean-data validation.** Overnight on 10-04 the ranker + classifier were retrained (72,096 / 30,896) and the backtest regenerated — the first retrain with 60-day labels on July entries maturing (`interim_60d` ~14k → ~26.6k). Classifier AUC softened 0.880 → 0.855 and win rate 36.5% → 32.6% (expected maturity, §3/§4.2), and the backtest simulation surfaced the **first apparent market downturn in the data** (random baseline −$70k vs model −$291; §4.3). On 10-05 ran `validate.py --json`: **11 PASS · 3 FAIL · 3 WARN** (no new failures; same structural H3/H4b/I2), and the notional-matched selection edge **rose to +$182,342 (p=0.0001, z=+23.5)** from $156k — the validated edge strengthened even as AUC fell. New WARN I2b (regime features ~100% NaN in old rows → possible date proxy). Also fixed a **cp1252 `UnicodeEncodeError`** that was crashing the scan logger and (historically) the label summary (§6) — UTF-8 stdout/stderr guard added to the three CLI entry points.
 
+
+**2026-10-20 — retrain + label + backtest + validate.** Retrained both models (83,439 / 37,225 decided), classifier AUC 0.855 → 0.859 (first uptick since 0.880), win 33.4%. Backtest: model +$44.8k vs random −$83.6k, drawdown $64k. `validate.py`: 11 PASS · 3 FAIL · 3 WARN (same H3/H4b/I2), notional-matched edge **$188,935, p=0.0001**. Open worry: October entries show ~0 rank correlation (−0.019) — likely immaturity, recheck at 30–45d. Noted: `label_outcomes` summary header still prints "Strategy (50/25)" although exits are ±50% (07-09) and the classifier meta says stop −50 — verify the win/loss counts use 50/50 and fix the stale label.
 ---
 
 ## 8. Dependency security triage (2026-07-30)
