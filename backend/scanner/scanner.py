@@ -6,6 +6,7 @@ fundamentals, sentiment, ML inference, risk scoring, ranking.
 
 import asyncio
 import logging
+import random
 import time
 import uuid
 from datetime import date, datetime
@@ -35,6 +36,10 @@ logger = logging.getLogger(__name__)
 # FMP rate limit — free tier is 250 calls/day; keep at 1 concurrent
 FMP_SEMAPHORE = asyncio.Semaphore(1)
 # yfinance concurrency is managed per-call inside yfinance_client._run_sync
+
+# Near-miss logging: sample of gate-rejected candidates written to the
+# outcomes DB (flagged near_miss=1) so training sees beyond the filter boundary
+NEAR_MISS_SAMPLE = 25
 
 
 class OptionsScanner:
@@ -169,10 +174,23 @@ class OptionsScanner:
             cand.iv_52w_high = iv_high
             cand.iv_52w_low = iv_low
 
+        # Stamp market-regime context (VIX, SPY trend, sector ETF trend) so the
+        # model can eventually learn regime-conditional behavior. Fetched once
+        # per scan; failures leave the fields None (features become NaN).
+        vix, spy_trend, sector_trends = await self._fetch_regime_data()
+        from backend.data.sector_etfs import sector_to_etf
+        for cand in all_candidates:
+            cand.vix_level = vix
+            cand.spy_vs_200d = spy_trend
+            fund = fundamentals_map.get(cand.underlying)
+            etf = sector_to_etf(fund.sector if fund else None)
+            cand.sector_trend_20d = sector_trends.get(etf) if etf else None
+
         # Stage 6: ML inference — build full 23-feature vectors, use predict_from_features
         from backend.ml.features import FeatureEngineer
         if self._feature_engineer is None:
             self._feature_engineer = FeatureEngineer()
+        _nan = float("nan")
         feature_vectors = [
             self._feature_engineer.build(
                 spread=cand,
@@ -182,6 +200,9 @@ class OptionsScanner:
                 hv_30d=cand.hv_30d or 0.30,
                 iv_52w_high=cand.iv_52w_high or 0.60,
                 iv_52w_low=cand.iv_52w_low or 0.15,
+                vix_level=cand.vix_level if cand.vix_level is not None else _nan,
+                spy_vs_200d=cand.spy_vs_200d if cand.spy_vs_200d is not None else _nan,
+                sector_trend_20d=cand.sector_trend_20d if cand.sector_trend_20d is not None else _nan,
             )
             for cand in all_candidates
         ]
@@ -197,38 +218,44 @@ class OptionsScanner:
         # Stage 8: Apply ML filter + rank
         reject_ml = reject_pop = reject_fund = reject_sent = 0
         ranked = []
+        rejected: list[RankedSpread] = []  # near-miss pool for training diversity
         for i, (cand, ml_pred, risk) in enumerate(
             zip(all_candidates, ml_predictions, risk_scores)
         ):
+            fund = fundamentals_map.get(cand.underlying, FundamentalData(symbol=cand.underlying))
+            sent = sentiment_map.get(cand.underlying, _neutral_sentiment(cand.underlying))
+            item = RankedSpread(
+                rank=0,  # filled below for passing candidates
+                spread=cand,
+                fundamentals=fund,
+                sentiment=sent,
+                ml_prediction=ml_pred,
+                risk_score=risk,
+            )
+
             # Post-ML quality filter
             if ml_pred.spread_quality_score < filters.min_ml_quality_score:
                 reject_ml += 1
+                rejected.append(item)
                 continue
             if not (filters.min_iv_rank <= cand.iv_rank <= filters.max_iv_rank):
                 reject_ml += 1  # reuse counter; IV rank is a quality gate
+                rejected.append(item)
                 continue
             if cand.probability_of_profit < filters.min_probability_of_profit:
                 reject_pop += 1
+                rejected.append(item)
                 continue
-            fund = fundamentals_map.get(cand.underlying, FundamentalData(symbol=cand.underlying))
-            sent = sentiment_map.get(cand.underlying, _neutral_sentiment(cand.underlying))
             if (fund.fundamental_score or 0) < filters.min_fundamental_score:
                 reject_fund += 1
+                rejected.append(item)
                 continue
             if sent.sentiment_score < filters.min_sentiment_score:
                 reject_sent += 1
+                rejected.append(item)
                 continue
 
-            ranked.append(
-                RankedSpread(
-                    rank=0,  # filled below
-                    spread=cand,
-                    fundamentals=fund,
-                    sentiment=sent,
-                    ml_prediction=ml_pred,
-                    risk_score=risk,
-                )
-            )
+            ranked.append(item)
 
         # Sort by ML quality score descending
         ranked.sort(key=lambda x: x.ml_prediction.spread_quality_score, reverse=True)
@@ -258,9 +285,15 @@ class OptionsScanner:
             time.time() - start_time,
         )
 
-        # Log ranked spreads for ML training (non-blocking, safe to fail)
+        # Log ranked spreads for ML training (non-blocking, safe to fail),
+        # plus a random sample of gate-rejected candidates flagged near_miss=1
+        # so training sees beyond the filter boundary.
         try:
-            self.outcome_logger.log_scan_results(scan_id, ranked)
+            near_misses = (
+                random.sample(rejected, min(NEAR_MISS_SAMPLE, len(rejected)))
+                if rejected else []
+            )
+            self.outcome_logger.log_scan_results(scan_id, ranked, near_misses=near_misses)
         except Exception as e:
             logger.warning("Outcome logging failed (scan unaffected): %s", e)
 
@@ -343,7 +376,8 @@ class OptionsScanner:
                 )
                 has_leaps_strategies = any(
                     s in filters.strategies
-                    for s in [SpreadType.LEAP_CALL, SpreadType.LEAP_PUT, SpreadType.LEAPS_SPREAD_CALL]
+                    for s in [SpreadType.LEAP_CALL, SpreadType.LEAP_PUT,
+                              SpreadType.LEAPS_SPREAD_CALL, SpreadType.LEAPS_SPREAD_PUT]
                 )
                 has_earnings_strategies = any(
                     s in filters.strategies
@@ -547,6 +581,66 @@ class OptionsScanner:
         return output
 
 
+    async def _fetch_regime_data(
+        self,
+    ) -> tuple[Optional[float], Optional[float], dict[str, float]]:
+        """
+        Market-regime snapshot fetched once per scan (Redis-cached 1h):
+          - VIX last close
+          - SPY vs its 200-day moving average, as a fraction
+          - {sector ETF: 20-session % change} for all 11 SPDR sector ETFs
+        Any failure returns None/{} — features degrade to NaN, never break a scan.
+        """
+        cached = await self.cache.get("regime_data")
+        if cached is not None:
+            try:
+                d = cached if isinstance(cached, dict) else None
+                if d and "vix" in d:
+                    return d.get("vix"), d.get("spy_vs_200d"), d.get("sector_trends", {})
+            except Exception:
+                pass
+
+        def _fetch() -> tuple[Optional[float], Optional[float], dict[str, float]]:
+            import yfinance as yf
+            from backend.data.sector_etfs import SECTOR_ETF
+
+            vix = spy_trend = None
+            trends: dict[str, float] = {}
+            try:
+                vix_hist = yf.Ticker("^VIX").history(period="5d", interval="1d")
+                if not vix_hist.empty:
+                    vix = round(float(vix_hist["Close"].iloc[-1]), 2)
+            except Exception as e:
+                logger.debug("VIX fetch failed: %s", e)
+            try:
+                spy = yf.Ticker("SPY").history(period="1y", interval="1d")["Close"].dropna()
+                if len(spy) >= 200:
+                    ma200 = float(spy.tail(200).mean())
+                    spy_trend = round((float(spy.iloc[-1]) - ma200) / ma200, 4)
+            except Exception as e:
+                logger.debug("SPY trend fetch failed: %s", e)
+            for etf in sorted(set(SECTOR_ETF.values())):
+                try:
+                    closes = yf.Ticker(etf).history(period="2mo", interval="1d")["Close"].dropna()
+                    if len(closes) >= 21:
+                        trends[etf] = round(float(closes.iloc[-1] / closes.iloc[-21] - 1), 4)
+                except Exception as e:
+                    logger.debug("Sector trend fetch failed %s: %s", etf, e)
+            return vix, spy_trend, trends
+
+        try:
+            vix, spy_trend, trends = await asyncio.to_thread(_fetch)
+        except Exception as e:
+            logger.warning("Regime data fetch failed (features will be NaN): %s", e)
+            return None, None, {}
+
+        await self.cache.set(
+            "regime_data",
+            {"vix": vix, "spy_vs_200d": spy_trend, "sector_trends": trends},
+            3600,
+        )
+        return vix, spy_trend, trends
+
     async def _fetch_hv_data(
         self, symbols: list[str]
     ) -> dict[str, tuple[float, float, float]]:
@@ -625,7 +719,8 @@ def _passes_ba_filter(spread: SpreadCandidate, max_pct: float) -> bool:
     return True
 
 
-_LEAPS_TYPES = {SpreadType.LEAP_CALL, SpreadType.LEAP_PUT, SpreadType.LEAPS_SPREAD_CALL}
+_LEAPS_TYPES = {SpreadType.LEAP_CALL, SpreadType.LEAP_PUT,
+                SpreadType.LEAPS_SPREAD_CALL, SpreadType.LEAPS_SPREAD_PUT}
 _EARNINGS_TYPES = {SpreadType.EARNINGS_CALL, SpreadType.EARNINGS_PUT}
 
 

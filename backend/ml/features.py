@@ -38,7 +38,18 @@ FEATURE_NAMES = [
     "price_vs_52w_high_pct",
     "price_vs_52w_low_pct",
     "sector_relative_strength",
+    # Direction & market regime — appended 2026-07 so older model artifacts
+    # (trained on the first 23) keep working via the inference slice shim.
+    # NEVER reorder or insert above this line; only append.
+    "is_bearish",
+    "vix_level",
+    "spy_vs_200d",
+    "sector_trend_20d",
 ]
+
+# Put-side strategies — sentiment/momentum features mean the opposite for these
+_BEARISH_TYPES = {SpreadType.BEAR_PUT, SpreadType.LEAP_PUT,
+                  SpreadType.LEAPS_SPREAD_PUT, SpreadType.EARNINGS_PUT}
 
 
 class FeatureEngineer:
@@ -57,6 +68,9 @@ class FeatureEngineer:
         hv_30d: float = 0.30,
         iv_52w_high: float = 0.60,
         iv_52w_low: float = 0.15,
+        vix_level: float = float("nan"),
+        spy_vs_200d: float = float("nan"),
+        sector_trend_20d: float = float("nan"),
     ) -> FeatureVector:
         long = spread.long_leg
         short = spread.short_leg
@@ -144,6 +158,11 @@ class FeatureEngineer:
             price_vs_52w_high_pct=p52h,
             price_vs_52w_low_pct=p52l,
             sector_relative_strength=float("nan"),  # no data source — XGBoost treats as missing
+            # Direction & regime
+            is_bearish=1.0 if spread.spread_type in _BEARISH_TYPES else 0.0,
+            vix_level=float(vix_level),
+            spy_vs_200d=float(spy_vs_200d),
+            sector_trend_20d=float(sector_trend_20d),
         )
 
     def to_numpy(self, fv: FeatureVector):

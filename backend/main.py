@@ -34,7 +34,7 @@ from starlette.responses import Response as StarletteResponse
 
 from backend.api.cache import RedisCache
 from backend.api.limiter import limiter
-from backend.api.routes import fundamentals, ml, options, scanner, sentiment
+from backend.api.routes import fundamentals, ml, options, positions, scanner, sentiment, ted
 from backend.config.settings import get_settings
 from backend.data.schwab_client import SchwabClient
 from backend.ml.model import SpreadRanker
@@ -71,6 +71,19 @@ async def _schwab_token_watchdog(schwab_client: SchwabClient) -> None:
     """
     while True:
         await asyncio.sleep(3600)  # check every hour
+
+        # The token file is read once at startup. If schwab_auth was re-run
+        # since, this process is still using — and failing to refresh — the old
+        # credentials until it restarts.
+        if schwab_client.newer_token_on_disk():
+            logger.error(
+                "SCHWAB TOKEN STALE IN MEMORY — a newer token exists on disk "
+                "(schwab_auth was re-run after this process started). "
+                "RESTART THE BACKEND to pick it up; until then Schwab calls "
+                "fail with HTTP 400 and fall back to yfinance."
+            )
+            continue
+
         days = schwab_client.token_days_remaining()
         if days is None:
             continue
@@ -328,6 +341,8 @@ app.include_router(options.router, prefix="/api/v1/options", tags=["Options"])
 app.include_router(sentiment.router, prefix="/api/v1/sentiment", tags=["Sentiment"])
 app.include_router(fundamentals.router, prefix="/api/v1/fundamentals", tags=["Fundamentals"])
 app.include_router(ml.router, prefix="/api/v1/ml", tags=["ML"])
+app.include_router(positions.router, prefix="/api/v1/positions", tags=["Positions"])
+app.include_router(ted.router, prefix="/api/v1/ted", tags=["Ted"])
 
 
 @app.get("/health")

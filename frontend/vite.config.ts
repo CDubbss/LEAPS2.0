@@ -10,6 +10,11 @@ export default defineConfig(({ mode }) => {
     ? { Authorization: `Basic ${Buffer.from(`:${reviewPass}`).toString("base64")}` }
     : {};
 
+  // `--mode preview` runs against an isolated backend instance on 8004
+  // (used by tooling so the main dev stack on 8001/5173 is never disturbed)
+  const apiTarget =
+    mode === "preview" ? "http://localhost:8004" : "http://localhost:8001";
+
   return {
     plugins: [react()],
     resolve: {
@@ -21,7 +26,7 @@ export default defineConfig(({ mode }) => {
       port: 5173,
       proxy: {
         "/api": {
-          target: "http://localhost:8001",
+          target: apiTarget,
           changeOrigin: true,
           headers: proxyHeaders,
         },

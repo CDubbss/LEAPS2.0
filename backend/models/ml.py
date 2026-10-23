@@ -37,6 +37,12 @@ class FeatureVector(BaseModel):
     price_vs_52w_low_pct: float     # (price - 52wl) / 52wl, positive = above low
     sector_relative_strength: float  # placeholder, 0.5 if unavailable
 
+    # --- Direction & market regime (added 2026-07; NaN on legacy rows) ---
+    is_bearish: float = float("nan")        # 1.0 = put-side strategy, 0.0 = call-side
+    vix_level: float = float("nan")         # VIX close at scan time
+    spy_vs_200d: float = float("nan")       # (SPY - 200d MA) / 200d MA
+    sector_trend_20d: float = float("nan")  # sector ETF 20-session % change
+
 
 class MLPrediction(BaseModel):
     spread_quality_score: float         # 0-100, primary ranking signal

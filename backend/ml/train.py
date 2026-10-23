@@ -13,13 +13,14 @@ After options expire, outcomes are labeled by the log_outcome.py script.
 """
 
 import argparse
+import gc
 import glob
 import json
 import logging
 import os
 import shutil
 import sqlite3
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 
 import joblib
@@ -28,8 +29,14 @@ import optuna
 import pandas as pd
 from sklearn.model_selection import TimeSeriesSplit
 from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import StandardScaler
-from xgboost import XGBRegressor
+from xgboost import XGBClassifier, XGBRegressor
+from xgboost.core import XGBoostError
+
+# A single trial can fail transiently under system memory pressure (XGBoost raises
+# XGBoostError('bad allocation') when the OS commit limit is momentarily hit — not a
+# data/code bug). These are passed to study.optimize(catch=...) so one bad trial is
+# marked failed and the search continues instead of aborting the whole run.
+TRIAL_CATCH = (MemoryError, XGBoostError)
 
 from backend.ml.features import FEATURE_NAMES
 
@@ -38,6 +45,7 @@ logger = logging.getLogger(__name__)
 
 DB_PATH = "backend/ml/data/spread_outcomes.db"
 MODEL_PATH = "backend/ml/artifacts/spread_ranker.joblib"
+STRATEGY_MODEL_PATH = "backend/ml/artifacts/strategy_classifier.joblib"
 SCALER_PATH = "backend/ml/artifacts/feature_scaler.joblib"
 
 # Sample weights by label tier — expiry labels are ground truth (1.0);
@@ -50,6 +58,8 @@ LABEL_WEIGHTS: dict[str, float] = {
     "interim_10d":  0.15,
     "interim_21d":  0.25,
     "interim_30d":  0.40,
+    "interim_45d":  0.50,
+    "interim_60d":  0.55,
     "interim_90d":  0.60,
     "interim_180d": 0.75,
     "interim_360d": 0.85,
@@ -69,9 +79,13 @@ def load_training_data(db_path: str) -> tuple[np.ndarray, np.ndarray, np.ndarray
     conn = sqlite3.connect(db_path)
     try:
         df = pd.read_sql(
+            # market_closed rows carry the prior session's chain under a
+            # non-trading entry_date — real quotes, wrong date, and often a
+            # near-duplicate that would straddle a CV fold boundary.
             "SELECT features_json, outcome_score, label_source "
             "FROM spread_outcomes "
             "WHERE outcome_score IS NOT NULL "
+            "  AND COALESCE(market_closed, 0) = 0 "
             "  AND spread_type NOT IN ('earnings_call', 'earnings_put')",
             conn,
         )
@@ -121,8 +135,10 @@ def objective(trial: optuna.Trial, X: np.ndarray, y: np.ndarray, w: np.ndarray) 
         y_train, y_val = y[train_idx], y[val_idx]
         w_train, w_val = w[train_idx], w[val_idx]
 
+        # No scaler: trees are scale-invariant, and StandardScaler emits
+        # divide warnings on all-NaN columns (regime features predate 2026-07
+        # rows, so early time-series folds have 100%-NaN columns).
         pipeline = Pipeline([
-            ("scaler", StandardScaler()),
             ("xgb", XGBRegressor(**params, verbosity=0)),
         ])
         pipeline.fit(X_train, y_train, xgb__sample_weight=w_train)
@@ -130,7 +146,9 @@ def objective(trial: optuna.Trial, X: np.ndarray, y: np.ndarray, w: np.ndarray) 
         # Weighted MSE: expiry-labeled val rows penalise errors more
         mse = float(np.average((preds - y_val) ** 2, weights=w_val))
         mse_scores.append(mse)
+        del pipeline, preds
 
+    gc.collect()  # release XGBoost native handles between trials
     return float(np.mean(mse_scores))
 
 
@@ -152,6 +170,7 @@ def train(db_path: str, n_trials: int = 50) -> None:
         lambda trial: objective(trial, X, y, w),
         n_trials=n_trials,
         show_progress_bar=True,
+        catch=TRIAL_CATCH,
     )
 
     best_params = study.best_params
@@ -160,7 +179,6 @@ def train(db_path: str, n_trials: int = 50) -> None:
     # Train final model on all data with best params and sample weights
     best_params.update({"random_state": 42, "tree_method": "hist", "device": "cpu"})
     final_pipeline = Pipeline([
-        ("scaler", StandardScaler()),
         ("xgb", XGBRegressor(**best_params, verbosity=0)),
     ])
     final_pipeline.fit(X, y, xgb__sample_weight=w)
@@ -171,7 +189,7 @@ def train(db_path: str, n_trials: int = 50) -> None:
     logger.info("Model saved to %s", MODEL_PATH)
 
     # Keep versioned copy for rollback; prune to last 3
-    ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    ts = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
     versioned = MODEL_PATH.replace(".joblib", f"_{ts}.joblib")
     shutil.copy(MODEL_PATH, versioned)
     logger.info("Versioned model saved to %s", versioned)
@@ -182,7 +200,7 @@ def train(db_path: str, n_trials: int = 50) -> None:
 
     # Save training metadata
     meta = {
-        "trained_at": datetime.utcnow().isoformat(),
+        "trained_at": datetime.now(UTC).isoformat(),
         "n_samples": len(y),
         "best_weighted_mse": study.best_value,
         "best_params": best_params,
@@ -193,6 +211,146 @@ def train(db_path: str, n_trials: int = 50) -> None:
     with open(meta_path, "w") as f:
         json.dump(meta, f, indent=2)
     logger.info("Training metadata saved to %s", meta_path)
+
+
+def load_strategy_data(db_path: str) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Load features and binary win/loss labels for the strategy classifier.
+
+    Only uses decided outcomes (win or loss) — 'open' rows are excluded.
+    Sample weights use the same tier-based weighting as the ranker.
+    """
+    conn = sqlite3.connect(db_path)
+    try:
+        df = pd.read_sql(
+            "SELECT features_json, strategy_result, label_source "
+            "FROM spread_outcomes "
+            "WHERE strategy_result IN ('win', 'loss') "
+            "  AND features_json IS NOT NULL "
+            "  AND COALESCE(market_closed, 0) = 0 "
+            "  AND spread_type NOT IN ('earnings_call', 'earnings_put')",
+            conn,
+        )
+    finally:
+        conn.close()
+
+    if df.empty:
+        raise ValueError("No strategy outcomes found — run label_outcomes first")
+
+    X_list, y_list, w_list = [], [], []
+    for _, row in df.iterrows():
+        features = json.loads(row["features_json"])
+        vec = [features.get(name, float("nan")) for name in FEATURE_NAMES]
+        X_list.append(vec)
+        y_list.append(1.0 if row["strategy_result"] == "win" else 0.0)
+        w_list.append(LABEL_WEIGHTS.get(row["label_source"] or "expiry", 1.0))
+
+    X = np.array(X_list, dtype=float)
+    y = np.array(y_list, dtype=float)
+    w = np.array(w_list, dtype=float)
+
+    wins = int(y.sum())
+    logger.info(
+        "Strategy data: %d samples (%d wins, %d losses, %.1f%% win rate)",
+        len(y), wins, len(y) - wins, 100 * wins / len(y),
+    )
+    return X, y, w
+
+
+def strategy_objective(trial: optuna.Trial, X: np.ndarray, y: np.ndarray, w: np.ndarray) -> float:
+    """Optuna objective for the strategy classifier: maximize AUC."""
+    params = {
+        "n_estimators": trial.suggest_int("n_estimators", 100, 500),
+        "max_depth": trial.suggest_int("max_depth", 3, 7),
+        "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.2, log=True),
+        "subsample": trial.suggest_float("subsample", 0.6, 1.0),
+        "colsample_bytree": trial.suggest_float("colsample_bytree", 0.5, 1.0),
+        "reg_alpha": trial.suggest_float("reg_alpha", 1e-4, 10.0, log=True),
+        "reg_lambda": trial.suggest_float("reg_lambda", 1e-4, 10.0, log=True),
+        "scale_pos_weight": trial.suggest_float("scale_pos_weight", 0.5, 3.0),
+        "random_state": 42,
+        "tree_method": "hist",
+        "device": "cpu",
+        "eval_metric": "auc",
+    }
+
+    from sklearn.metrics import roc_auc_score
+    tscv = TimeSeriesSplit(n_splits=5)
+    auc_scores = []
+
+    for train_idx, val_idx in tscv.split(X):
+        X_train, X_val = X[train_idx], X[val_idx]
+        y_train, y_val = y[train_idx], y[val_idx]
+        w_train = w[train_idx]
+
+        # Skip folds where either split has only one class
+        if len(np.unique(y_train)) < 2 or len(np.unique(y_val)) < 2:
+            continue
+
+        pipeline = Pipeline([
+            ("xgb", XGBClassifier(**params, verbosity=0, use_label_encoder=False)),
+        ])
+        pipeline.fit(X_train, y_train, xgb__sample_weight=w_train)
+        proba = pipeline.predict_proba(X_val)[:, 1]
+        auc_scores.append(roc_auc_score(y_val, proba, sample_weight=w[val_idx]))
+        del pipeline, proba
+
+    gc.collect()  # release XGBoost native handles between trials
+    return -float(np.mean(auc_scores)) if auc_scores else 0.0
+
+
+def train_strategy(db_path: str, n_trials: int = 50) -> None:
+    """Train the strategy classifier: P(hit commission-adjusted +50% before the -50% stop)."""
+    logger.info("Loading strategy data from %s", db_path)
+    X, y, w = load_strategy_data(db_path)
+
+    if len(y) < 100:
+        logger.warning("Only %d strategy samples — classifier may be unreliable.", len(y))
+
+    logger.info("Running Optuna search for strategy classifier (%d trials)...", n_trials)
+    study = optuna.create_study(direction="minimize")
+    study.optimize(
+        lambda trial: strategy_objective(trial, X, y, w),
+        n_trials=n_trials,
+        show_progress_bar=True,
+        catch=TRIAL_CATCH,
+    )
+
+    best_params = study.best_params
+    best_auc = -study.best_value
+    logger.info("Best strategy params: %s (AUC=%.4f)", best_params, best_auc)
+
+    best_params.update({
+        "random_state": 42, "tree_method": "hist", "device": "cpu",
+        "eval_metric": "auc",
+    })
+    final_pipeline = Pipeline([
+        ("xgb", XGBClassifier(**best_params, verbosity=0, use_label_encoder=False)),
+    ])
+    final_pipeline.fit(X, y, xgb__sample_weight=w)
+
+    os.makedirs(os.path.dirname(STRATEGY_MODEL_PATH), exist_ok=True)
+    joblib.dump(final_pipeline, STRATEGY_MODEL_PATH)
+    logger.info("Strategy classifier saved to %s", STRATEGY_MODEL_PATH)
+
+    wins = int(y.sum())
+    meta = {
+        "trained_at": datetime.now(UTC).isoformat(),
+        "n_samples": len(y),
+        "n_wins": wins,
+        "n_losses": len(y) - wins,
+        "win_rate": round(wins / len(y), 4),
+        "best_auc": round(best_auc, 4),
+        "best_params": best_params,
+        "profit_target_pct": 50.0,
+        "stop_loss_pct": -50.0,
+        "commission_per_10_contracts": 26.0,
+        "feature_names": FEATURE_NAMES,
+    }
+    meta_path = STRATEGY_MODEL_PATH.replace(".joblib", "_meta.json")
+    with open(meta_path, "w") as f:
+        json.dump(meta, f, indent=2)
+    logger.info("Strategy metadata saved to %s", meta_path)
 
 
 def init_database(db_path: str) -> None:
@@ -228,3 +386,7 @@ if __name__ == "__main__":
         init_database(args.data_path)
     else:
         train(args.data_path, args.trials)
+        try:
+            train_strategy(args.data_path, args.trials)
+        except ValueError as e:
+            logger.warning("Skipping strategy classifier: %s", e)

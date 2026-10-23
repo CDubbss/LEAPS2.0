@@ -37,8 +37,8 @@ class Settings(BaseSettings):
     FINBERT_DEVICE: str = "cpu"  # set to "cuda" if GPU available
 
     # ML
-    ML_MODEL_PATH: str = "ml/artifacts/spread_ranker.joblib"
-    ML_FEATURE_SCALER_PATH: str = "ml/artifacts/feature_scaler.joblib"
+    ML_MODEL_PATH: str = "backend/ml/artifacts/spread_ranker.joblib"
+    ML_FEATURE_SCALER_PATH: str = "backend/ml/artifacts/feature_scaler.joblib"
 
     # Scanner defaults
     SCANNER_MIN_VOLUME: int = 100

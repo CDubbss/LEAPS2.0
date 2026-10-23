@@ -16,6 +16,7 @@ class SpreadType(str, Enum):
     LEAP_CALL = "leap_call"
     LEAP_PUT = "leap_put"
     LEAPS_SPREAD_CALL = "leaps_spread_call"
+    LEAPS_SPREAD_PUT = "leaps_spread_put"
     EARNINGS_CALL = "earnings_call"
     EARNINGS_PUT = "earnings_put"
 
@@ -71,5 +72,9 @@ class SpreadCandidate(BaseModel):
     hv_30d: Optional[float] = None             # 30-day realized volatility (annualized)
     iv_52w_high: Optional[float] = None        # 52-week IV high (HV proxy)
     iv_52w_low: Optional[float] = None         # 52-week IV low (HV proxy)
+    # Market-regime context stamped by the scanner (None on legacy rows)
+    vix_level: Optional[float] = None          # VIX close at scan time
+    spy_vs_200d: Optional[float] = None        # (SPY - 200d MA) / 200d MA
+    sector_trend_20d: Optional[float] = None   # sector ETF 20-session % change
     days_to_earnings: Optional[int] = None     # calendar days until next earnings
     next_earnings_date: Optional[date] = None  # absolute date of next earnings event

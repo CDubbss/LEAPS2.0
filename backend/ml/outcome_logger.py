@@ -18,6 +18,7 @@ import logging
 import os
 import sqlite3
 from datetime import date, datetime
+from typing import Optional
 
 from backend.ml.features import FeatureEngineer
 from backend.models.options import SpreadType
@@ -26,6 +27,24 @@ from backend.models.scanner import RankedSpread
 logger = logging.getLogger(__name__)
 
 DB_PATH = "backend/ml/data/spread_outcomes.db"
+_RANKER_META_PATH = "backend/ml/artifacts/spread_ranker_meta.json"
+
+# Cached (mtime, version) so we read the meta file at most once per retrain
+_model_version_cache: tuple[float, str] = (0.0, "placeholder")
+
+
+def _current_model_version() -> str:
+    """trained_at of the active ranker artifact, or 'placeholder' when untrained."""
+    global _model_version_cache
+    try:
+        mtime = os.path.getmtime(_RANKER_META_PATH)
+        if mtime != _model_version_cache[0]:
+            with open(_RANKER_META_PATH) as f:
+                version = json.load(f).get("trained_at", "unknown")
+            _model_version_cache = (mtime, version)
+        return _model_version_cache[1]
+    except OSError:
+        return "placeholder"
 
 
 class OutcomeLogger:
@@ -51,6 +70,7 @@ class OutcomeLogger:
         scan_id: str,
         ranked: list[RankedSpread],
         horizon_days: int = 30,
+        near_misses: Optional[list[RankedSpread]] = None,
     ) -> int:
         """
         Persist a mixed sample of ranked spreads from one scan.
@@ -68,7 +88,7 @@ class OutcomeLogger:
         Returns:
             Number of rows written (0 on error).
         """
-        if not ranked:
+        if not ranked and not near_misses:
             return 0
 
         # Earnings plays have fundamentally different P&L mechanics (IV expansion
@@ -80,12 +100,26 @@ class OutcomeLogger:
         if n_skipped:
             logger.debug("OutcomeLogger: skipped %d earnings candidates (kept separate)", n_skipped)
 
-        to_log = eligible
+        # Near-misses (failed a quality gate) are logged flagged — they widen the
+        # feature distribution so the model learns what "just below the bar"
+        # actually does, instead of only ever seeing pre-approved candidates.
+        to_log = [(item, 0) for item in eligible] + [
+            (item, 1) for item in (near_misses or [])
+            if item.spread.spread_type not in _EARNINGS_TYPES
+        ]
 
-        today = date.today().isoformat()
+        model_version = _current_model_version()
+        _today = date.today()
+        today = _today.isoformat()
+        # yfinance serves the previous session's chain when the NYSE is shut
+        # (weekend or holiday), so those rows carry stale quotes under the
+        # wrong date. Stamp at insert so a manual or overridden run is excluded
+        # from training the same way the backfilled historical rows are.
+        from backend.data.market_calendar import is_market_open
+        market_closed = 0 if is_market_open(_today) else 1
         rows = []
 
-        for item in to_log:
+        for item, near_miss in to_log:
             spread = item.spread
             fund = item.fundamentals
             sent = item.sentiment
@@ -93,6 +127,7 @@ class OutcomeLogger:
 
             # Build full 23-feature vector using all available data
             try:
+                _nan = float("nan")
                 fv = self._engineer.build(
                     spread=spread,
                     fundamentals=fund,
@@ -101,6 +136,9 @@ class OutcomeLogger:
                     hv_30d=spread.hv_30d or 0.30,
                     iv_52w_high=spread.iv_52w_high or 0.60,
                     iv_52w_low=spread.iv_52w_low or 0.15,
+                    vix_level=spread.vix_level if spread.vix_level is not None else _nan,
+                    spy_vs_200d=spread.spy_vs_200d if spread.spy_vs_200d is not None else _nan,
+                    sector_trend_20d=spread.sector_trend_20d if spread.sector_trend_20d is not None else _nan,
                 )
                 fv_dict = fv.model_dump()
                 # Attach spread economics and ML score so backtest.py can use
@@ -109,6 +147,9 @@ class OutcomeLogger:
                 fv_dict["max_profit"] = round(spread.max_profit, 4)
                 fv_dict["max_loss"] = round(spread.max_loss, 4)
                 fv_dict["net_debit"] = round(spread.net_debit, 4)
+                # Provenance: which ranker produced ml_score (era segmentation
+                # for backtests; placeholder mode stamps "placeholder")
+                fv_dict["model_version"] = model_version
                 features_json = json.dumps(fv_dict)
             except Exception as e:
                 logger.warning("Feature build failed for %s: %s", spread.underlying, e)
@@ -144,6 +185,8 @@ class OutcomeLogger:
                 short.mid if short else None,
                 spot,
                 horizon_days,
+                near_miss,
+                market_closed,
             ))
 
         # Write spread candidates first — this is the critical write.
@@ -158,8 +201,8 @@ class OutcomeLogger:
                         scan_id, symbol, spread_type, expiration, entry_date,
                         outcome_score, features_json, contract_json,
                         entry_net_debit, long_mid_at_entry, short_mid_at_entry,
-                        spot_at_entry, horizon_days
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        spot_at_entry, horizon_days, near_miss, market_closed
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     rows,
                 )
@@ -232,7 +275,10 @@ class OutcomeLogger:
                 current_value   REAL,           -- spread mid at snapshot
                 pnl_pct         REAL,           -- (current - entry) / entry * 100
                 outcome_score   REAL,           -- normalized pnl 0-100
-                data_quality    TEXT DEFAULT 'ok',  -- 'ok' | 'clamped' | 'illiquid'
+                -- 'ok' | 'clamped'. Provenance columns (raw_value, per-leg
+                -- bid/ask/source, price_provider) and the snapshot_rejections
+                -- table are added by label_outcomes._migrate().
+                data_quality    TEXT DEFAULT 'ok',
                 fetched_at      TEXT DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE (outcome_id, days_since_entry)
             )
@@ -248,6 +294,13 @@ class OutcomeLogger:
             ("horizon_days",        "INTEGER DEFAULT 30"),
             ("best_sell_days",      "INTEGER"),
             ("peak_pnl_pct",        "REAL"),
+            ("peak_pnl_dollars",    "REAL"),
+            ("label_source",        "TEXT"),
+            ("strategy_result",     "TEXT"),
+            ("days_to_target",      "INTEGER"),
+            ("days_to_stop",        "INTEGER"),
+            ("strategy_pnl",        "REAL"),
+            ("near_miss",           "INTEGER DEFAULT 0"),
         ]
         for col, typedef in new_cols:
             try:

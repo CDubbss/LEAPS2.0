@@ -68,6 +68,7 @@ export function spreadTypeLabel(type: string): string {
     leap_call: "LEAPS Call",
     leap_put: "LEAPS Put",
     leaps_spread_call: "LEAPS Spread",
+    leaps_spread_put: "LEAPS Put Spread",
     earnings_call: "Earnings Call",
     earnings_put: "Earnings Put",
   };
@@ -81,6 +82,7 @@ export function spreadTypeBadgeColor(type: string): string {
     leap_call: "bg-blue-600 text-white",
     leap_put: "bg-purple-600 text-white",
     leaps_spread_call: "bg-indigo-600 text-white",
+    leaps_spread_put: "bg-fuchsia-700 text-white",
     earnings_call: "bg-amber-600 text-white",
     earnings_put: "bg-orange-700 text-white",
   };

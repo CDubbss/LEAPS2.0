@@ -103,6 +103,44 @@ class FMPClient(BaseAPIClient):
             self._budget_date = today
         return self._calls_today + self._CALLS_PER_SYMBOL <= self._DAILY_BUDGET
 
+    async def get_earnings_calendar(self, from_date: date, to_date: date) -> list[dict]:
+        """
+        Earnings calendar for a date range (single API call for all symbols).
+        Returns [] on any failure (plan-tier 402, network, malformed response) —
+        callers must handle the empty case.
+        """
+        try:
+            data = await self._get("/earnings-calendar", {
+                "from": from_date.isoformat(),
+                "to": to_date.isoformat(),
+                "apikey": self.api_key,
+            })
+            if isinstance(data, list):
+                self._calls_today += 1
+                return data
+            logger.debug("FMP earnings-calendar non-list response: %s", str(data)[:200])
+            return []
+        except Exception as e:
+            logger.debug("FMP earnings-calendar failed: %s", e)
+            return []
+
+    async def get_price_target_consensus(self, symbol: str) -> Optional[dict]:
+        """
+        Analyst price-target consensus for one symbol, or None when the
+        endpoint is unavailable on the current plan tier.
+        """
+        try:
+            data = await self._get("/price-target-consensus", {
+                "symbol": symbol, "apikey": self.api_key,
+            })
+            if isinstance(data, list) and data and isinstance(data[0], dict):
+                self._calls_today += 1
+                return data[0]
+            return None
+        except Exception as e:
+            logger.debug("FMP price-target-consensus %s failed: %s", symbol, e)
+            return None
+
     async def get_full_fundamentals(self, symbol: str) -> FundamentalData:
         """
         Fetch and aggregate fundamentals. Requests are sequential to avoid
