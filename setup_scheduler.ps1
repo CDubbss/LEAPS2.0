@@ -10,6 +10,11 @@
 #       Collects mark-to-market price snapshots at 7/14/21/28/35/40/50/60/90
 #       business-day intervals and labels completed spreads with peak P&L outcomes.
 #       Output → logs\label_outcomes.log (appended, timestamped)
+#   "Leaps2.0 - Scheduled Scan"  — runs daily at 8:30 AM and 1:30 PM MT
+#   "Leaps2.0 - Ted Scan"        — runs daily at 8:45 AM MT
+#       Automated "The Ted" candidate discovery + pre-screen (populates the
+#       /ted/candidates cache) then labels any due track-record rows.
+#       Output → logs\ted_scan.log
 
 $ErrorActionPreference = "Stop"
 
@@ -104,6 +109,39 @@ Write-Host "  Schedule : Daily at 8:30 AM and 1:30 PM MT"
 Write-Host "  Config   : $scanConfig"
 Write-Host "  Log file : $scanLogFile"
 Write-Host "  Results  : $root\logs\scheduled_scans\"
+
+# ---------------------------------------------------------------------------
+# Task 3: Ted Scan — automated "The Ted" candidate discovery + track-record label
+# ---------------------------------------------------------------------------
+$tedTaskName = "Leaps2.0 - Ted Scan"
+$tedLogFile  = "$logDir\ted_scan.log"
+
+# Discovery (populates the /ted/candidates cache) then label any due track-record rows.
+$tedCmdArgs = "/c `"echo [%DATE% %TIME%] Starting ted_scan >> `"$tedLogFile`" 2>&1 && cd /d `"$root`" && `"$python`" -m backend.scripts.ted_scan >> `"$tedLogFile`" 2>&1 && `"$python`" -m backend.scripts.ted_scan --label >> `"$tedLogFile`" 2>&1 && echo [%DATE% %TIME%] Done >> `"$tedLogFile`" 2>&1`""
+
+$tedAction  = New-ScheduledTaskAction -Execute "cmd.exe" -Argument $tedCmdArgs
+$tedTrigger = New-ScheduledTaskTrigger -Daily -At "08:45AM"
+$tedSettings = New-ScheduledTaskSettingsSet `
+    -Hidden `
+    -ExecutionTimeLimit (New-TimeSpan -Hours 1) `
+    -StartWhenAvailable `
+    -RunOnlyIfNetworkAvailable `
+    -MultipleInstances IgnoreNew
+
+Register-ScheduledTask `
+    -TaskName $tedTaskName `
+    -Action $tedAction `
+    -Trigger $tedTrigger `
+    -Settings $tedSettings `
+    -Description "Leaps2.0: automated 'The Ted' earnings-IV candidate discovery + pre-screen, and track-record labeling. Populates the /ted/candidates cache." `
+    -Force | Out-Null
+
+Write-Host ""
+Write-Host "Task registered:" -ForegroundColor Green
+Write-Host "  Name     : $tedTaskName"
+Write-Host "  Schedule : Daily at 8:45 AM MT"
+Write-Host "  Log file : $tedLogFile"
+
 Write-Host ""
 Write-Host "To run scan immediately:" -ForegroundColor Cyan
 Write-Host "  Start-ScheduledTask -TaskName '$scanTaskName'"

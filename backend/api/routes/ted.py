@@ -14,7 +14,7 @@ import re
 from datetime import date, timedelta
 from typing import Literal, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 
 from backend.api.cache import RedisCache
 from backend.api.dependencies import get_cache, get_fmp_client, get_yf_client
@@ -30,6 +30,14 @@ from backend.scanner.ted_checker import (
     TedMarketData,
     TedReport,
     evaluate_gates,
+)
+from backend.scanner.ted_scanner import (
+    BUILDING_FLAG_KEY,
+    BUILDING_TTL,
+    CANDIDATES_CACHE_KEY,
+    CANDIDATES_TTL,
+    build_candidate_payload,
+    past_earnings_moves,
 )
 from backend.scanner.universe import DEFAULT_UNIVERSE
 
@@ -72,103 +80,72 @@ def _validate_symbol(symbol: str) -> str:
 
 @router.get("/candidates")
 async def get_candidates(
-    fmp: FMPClient = Depends(get_fmp_client),
+    background: BackgroundTasks,
+    refresh: bool = Query(default=False, description="Force a background rebuild"),
     cache: RedisCache = Depends(get_cache),
+    yf_client: YFinanceClient = Depends(get_yf_client),
 ) -> dict:
     """
-    Universe symbols with earnings inside the valid Ted entry window (7-14 days).
-    Primary source: FMP earnings-calendar (one call). Cached for 6 hours.
+    Universe symbols with earnings in the Ted entry window (7-14 days),
+    pre-screened on the direction-independent gates (timing, qualifying expiry,
+    market attention, historical big mover).
+
+    Built from yfinance — the FMP earnings-calendar endpoint 402s on the free
+    tier (HANDOFF §5). Served from a 6h cache; a cold miss (or ?refresh=true)
+    kicks a background sweep and returns whatever is cached now (empty +
+    "building" on first run). The full sweep is also runnable and schedulable
+    via `python -m backend.scripts.ted_scan`.
     """
-    cache_key = "ted:candidates"
-    cached = await cache.get(cache_key)
-    if cached:
+    cached = await cache.get(CANDIDATES_CACHE_KEY)
+    if cached and not refresh:
         return cached
 
+    # Kick a background rebuild unless one is already running (self-clearing
+    # flag so a crashed build can't wedge the list permanently).
+    building = await cache.get(BUILDING_FLAG_KEY)
+    if not building:
+        await cache.set(BUILDING_FLAG_KEY, True, BUILDING_TTL)
+        background.add_task(_refresh_candidates, yf_client, cache)
+
+    if cached:
+        return {**cached, "building": True,
+                "message": "Refreshing candidate list in the background…"}
+
     today = date.today()
-    lo = today + timedelta(days=MIN_DAYS_OUT)
-    hi = today + timedelta(days=MAX_DAYS_OUT)
-
-    async with fmp:
-        rows = await fmp.get_earnings_calendar(lo, hi)
-
-    universe = set(DEFAULT_UNIVERSE)
-    seen: set[str] = set()
-    candidates = []
-    for row in rows:
-        sym = str(row.get("symbol", "")).upper()
-        date_str = str(row.get("date", ""))[:10]
-        if sym not in universe or sym in seen or not date_str:
-            continue
-        try:
-            edate = date.fromisoformat(date_str)
-        except ValueError:
-            continue
-        days_out = (edate - today).days
-        if days_out < MIN_DAYS_OUT or days_out > MAX_DAYS_OUT:
-            continue
-        seen.add(sym)
-        candidates.append({
-            "symbol": sym,
-            "earnings_date": edate.isoformat(),
-            "days_out": days_out,
-            "ideal": 10 <= days_out <= 12,
-        })
-
-    candidates.sort(key=lambda c: (c["days_out"], c["symbol"]))
-    result = {
-        "candidates": candidates,
-        "window": {"from": lo.isoformat(), "to": hi.isoformat()},
-        "source": "fmp" if rows else "none",
-        "message": (
-            "" if rows else
-            "FMP earnings calendar unavailable on this plan — "
-            "search a ticker directly; its earnings date is fetched per symbol."
-        ),
+    return {
+        "candidates": [],
+        "window": {
+            "from": (today + timedelta(days=MIN_DAYS_OUT)).isoformat(),
+            "to": (today + timedelta(days=MAX_DAYS_OUT)).isoformat(),
+        },
+        "source": "building",
+        "message": ("Building the Ted candidate list from the earnings "
+                    "calendar — check back in a minute."),
+        "building": True,
     }
-    await cache.set(cache_key, result, ttl=6 * 3600)
-    return result
+
+
+async def _refresh_candidates(yf_client: YFinanceClient, cache: RedisCache) -> None:
+    """Background: sweep the universe and cache the pre-screened candidate list."""
+    try:
+        payload = await build_candidate_payload(list(DEFAULT_UNIVERSE), yf_client, cache)
+        await cache.set(CANDIDATES_CACHE_KEY, payload, CANDIDATES_TTL)
+        logger.info(
+            "Ted candidates rebuilt: %d in window, %d qualifying",
+            len(payload["candidates"]), payload.get("qualifying", 0),
+        )
+    except Exception as e:
+        logger.exception("Ted candidate refresh failed: %s", e)
+    finally:
+        try:
+            await cache.delete(BUILDING_FLAG_KEY)
+        except Exception:
+            pass
 
 
 # ---------------------------------------------------------------------------
 # Market-data helpers (sync, run in threads)
 # ---------------------------------------------------------------------------
-
-def _past_earnings_moves(symbol: str) -> list[float]:
-    """Absolute-signed % next-day moves for the last 8 completed earnings."""
-    import pandas as pd
-    import yfinance as yf
-
-    try:
-        tk = yf.Ticker(symbol)
-        edates = tk.get_earnings_dates(limit=12)
-        if edates is None or edates.empty:
-            return []
-        hist = tk.history(period="2y", interval="1d")
-        if hist.empty:
-            return []
-        hist.index = hist.index.tz_localize(None).normalize()
-        closes = hist["Close"]
-
-        moves: list[float] = []
-        today = pd.Timestamp(date.today())
-        for ts in edates.index:
-            d = pd.Timestamp(ts).tz_localize(None).normalize()
-            if d >= today:
-                continue  # future earnings row
-            # close strictly before earnings vs first close on/after it
-            before = closes[closes.index < d]
-            after = closes[closes.index >= d]
-            if before.empty or after.empty:
-                continue
-            move = (after.iloc[0] / before.iloc[-1] - 1) * 100
-            moves.append(round(float(move), 2))
-            if len(moves) >= 8:
-                break
-        return moves
-    except Exception as e:
-        logger.debug("past earnings moves failed %s: %s", symbol, e)
-        return []
-
 
 def _trend_ok(symbol: str, direction: str) -> Optional[bool]:
     """True when the last close moved in the thesis direction vs N sessions ago."""
@@ -309,7 +286,7 @@ async def check_symbol(
 
     # 4. Slow lookups in parallel threads
     sector_etf = SECTOR_ETF.get((fund.sector or "").lower())
-    moves_t = asyncio.to_thread(_past_earnings_moves, sym)
+    moves_t = asyncio.to_thread(past_earnings_moves, sym)
     drift_t = asyncio.to_thread(_trend_ok, sym, direction)
     hv90_t = asyncio.to_thread(_hv90_pct, sym)
     sector_t = (
