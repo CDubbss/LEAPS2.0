@@ -15,7 +15,15 @@ export function formatScore(score: number): string {
 }
 
 export function formatDate(dateStr: string): string {
-  const d = new Date(dateStr);
+  // A date-only string ("YYYY-MM-DD") is parsed by the Date constructor as UTC
+  // midnight, which renders one day early in any negative-offset timezone
+  // (e.g. "2026-01-21" -> "Jan 20" in Mountain Time). Parse those as local time
+  // from their components. Full datetime strings (with time/offset) are left
+  // untouched so their instant is preserved. (HANDOFF §4.5)
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dateStr);
+  const d = m
+    ? new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]))
+    : new Date(dateStr);
   return d.toLocaleDateString("en-US", {
     month: "short",
     day: "numeric",

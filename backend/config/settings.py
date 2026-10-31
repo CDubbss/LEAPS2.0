@@ -50,7 +50,17 @@ class Settings(BaseSettings):
     # Redis
     REDIS_URL: str = "redis://localhost:6379"
     CACHE_TTL_QUOTES: int = Field(default=60, ge=1, le=86400)
-    CACHE_TTL_FUNDAMENTALS: int = Field(default=86400, ge=1, le=604800)
+    # Fundamentals change quarterly, so a 24h TTL just burns the FMP free-tier
+    # budget (240 calls/day = ~48 symbols) re-fetching unchanged data and can
+    # never keep the ~587-symbol universe warm — most symbols expire before
+    # they are refetched and log NaN features (HANDOFF §4.9). 14 days lets the
+    # daily budget warm the whole universe within one TTL window.
+    CACHE_TTL_FUNDAMENTALS: int = Field(default=1_209_600, ge=1, le=2_592_000)
+    # Durable "last known good" fundamentals snapshot. Consulted only when a
+    # fresh fetch returns no core fundamentals (402 / budget exhausted) so the
+    # feature vector reuses the last real values instead of blanking to NaN.
+    CACHE_TTL_FUNDAMENTALS_LASTGOOD: int = Field(default=7_776_000, ge=1, le=15_552_000)
+    FUNDAMENTALS_LASTGOOD_FALLBACK: bool = True
     CACHE_TTL_CHAINS: int = Field(default=300, ge=1, le=86400)
     CACHE_TTL_SENTIMENT: int = Field(default=3600, ge=1, le=86400)
     CACHE_TTL_ML: int = Field(default=300, ge=1, le=86400)
