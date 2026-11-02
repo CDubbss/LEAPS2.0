@@ -6,7 +6,8 @@ the /ted/candidates API serves (`ted:candidates`). The TedPage candidates panel
 then populates automatically — no manual ticker entry.
 
 Does NOT require the FastAPI server; it builds its own yfinance client + cache.
-Schedule it daily (Windows Task Scheduler) to keep the list warm.
+Schedule it on weekdays (Windows Task Scheduler) to keep the list warm; it
+self-skips weekends and NYSE holidays (exit 0) unless --allow-market-closed.
 
 Usage:
     backend/.venv/Scripts/python.exe -m backend.scripts.ted_scan
@@ -19,6 +20,7 @@ import argparse
 import asyncio
 import logging
 import sys
+from datetime import date
 from pathlib import Path
 
 _PROJECT_ROOT = Path(__file__).parent.parent.parent
@@ -165,7 +167,31 @@ def main() -> None:
     ap.add_argument("--dry-run", action="store_true", help="Don't write the cache / track record.")
     ap.add_argument("--label", action="store_true",
                     help="Read exit IV for due track-record rows instead of scanning.")
+    ap.add_argument("--allow-market-closed", action="store_true",
+                    help="Run even on a weekend or NYSE holiday (quotes will be "
+                         "stale). By default the scan skips non-trading days.")
     args = ap.parse_args()
+
+    # Only run on NYSE trading days. yfinance still answers when the market is
+    # shut — it serves the prior session's stale chain — so a weekend/holiday
+    # run would cache stale entry IVs and log bad track-record rows. Skip before
+    # any work; exit 0 because a non-trading day is the expected outcome, not a
+    # failure. --dry-run is exempt (writes nothing); --allow-market-closed forces
+    # a real run.
+    from backend.data.market_calendar import market_closed_reason
+    closed = market_closed_reason(date.today())
+    if closed and not (args.allow_market_closed or args.dry_run):
+        logger.info(
+            "Market closed — %s (%s). Skipping Ted scan. "
+            "Use --allow-market-closed to override.",
+            closed, date.today().strftime("%A %Y-%m-%d"),
+        )
+        sys.exit(0)
+    if closed:
+        logger.warning(
+            "Market closed (%s) — running anyway (%s).",
+            closed, "dry-run" if args.dry_run else "--allow-market-closed set",
+        )
 
     if args.label:
         from backend.ml import ted_outcomes
