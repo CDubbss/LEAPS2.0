@@ -288,6 +288,28 @@ export type TedCandidate = {
   earnings_date: string;
   days_out: number;
   ideal: boolean;
+  // Direction-independent pre-screen (present when the list is yfinance-built).
+  qualifies?: boolean; // Gate 1 (timing) + Gate 2 (expiry 1-2d past) both pass
+  qualifying_expiry?: string | null;
+  big_mover?: boolean; // Gate 7: >=3 of last 8 earnings moved >=8%
+  big_mover_count?: number;
+  attention?: boolean; // Gate 6: large cap or deep chain OI
+  prescreen_score?: number;
+  // Auto-evaluation (qualifiers only): thesis inferred from drift, entry IV at
+  // the ATM strike, and whether IV still has room to run (Gate 12).
+  inferred_direction?: "bull" | "bear" | null;
+  option_side?: "call" | "put" | null;
+  atm_strike?: number | null;
+  entry_iv?: number | null;
+  iv_room?: boolean | null;
+  exit_by?: string | null;
+  // Full 14-gate verdict for the inferred thesis, bucketed into tiers.
+  tier?: "pass_all" | "pass_most" | "weak";
+  verdict?: "TRADE" | "CAUTION" | "WEAK" | "NO_TRADE" | null;
+  iv_score?: number | null;
+  dir_score?: number | null;
+  gates_passed?: number | null;
+  gates_total?: number | null;
 };
 
 export type TedGate = {
@@ -366,6 +388,8 @@ export const tedApi = {
     window: { from: string; to: string };
     source: string;
     message: string;
+    building?: boolean;
+    qualifying?: number;
   }> => api.get("/ted/candidates").then((r) => r.data),
 
   check: (symbol: string, params: TedCheckParams): Promise<TedCheckResponse> =>

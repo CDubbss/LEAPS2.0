@@ -8,6 +8,7 @@ Users can override with an explicit symbol list via ScannerFilters.symbols.
 """
 
 import logging
+from pathlib import Path
 
 from backend.models.scanner import ScannerFilters
 
@@ -317,6 +318,31 @@ _ETFS = [
 ]
 
 # ---------------------------------------------------------------------------
+# NYSE expansion tier — optionable, liquidity-gated NYSE names NOT already in
+# the core universe above. Loaded from a checked-in data file produced (and
+# reviewed) via backend/scripts/build_nyse_expansion.py. A missing file means an
+# empty tier (no-op), so all the scaffolding is safe before the list is sourced.
+# Deliberately kept OUT of DEFAULT_UNIVERSE so the core LEAPS model's training
+# population is never shifted; this tier is scanned on its own into a separate
+# outcomes DB / model. The Ted (rule-based, no model) screens the union via
+# core_plus_expansion().
+# ---------------------------------------------------------------------------
+_NYSE_EXPANSION_FILE = Path(__file__).parent / "data" / "nyse_expansion.txt"
+
+
+def _load_expansion_symbols(path: Path) -> list[str]:
+    """Read one-symbol-per-line (``#`` comments allowed), deduped + sorted."""
+    try:
+        raw = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return []
+    syms = {ln.strip().upper() for ln in raw if ln.strip() and not ln.lstrip().startswith("#")}
+    return sorted(syms)
+
+
+_NYSE_EXPANSION: list[str] = _load_expansion_symbols(_NYSE_EXPANSION_FILE)
+
+# ---------------------------------------------------------------------------
 # Named index groups — keyed by the values accepted in ScannerFilters.index_groups
 # ---------------------------------------------------------------------------
 _SP500_ALL = (
@@ -332,6 +358,7 @@ UNIVERSE_GROUPS: dict[str, list[str]] = {
     "sp500": _SP500_ALL,
     "msci": _MSCI_COVERAGE,
     "etfs": _ETFS,
+    "nyse_expansion": _NYSE_EXPANSION,   # the separate expansion tier
 }
 
 # ---------------------------------------------------------------------------
@@ -346,6 +373,16 @@ DEFAULT_UNIVERSE: list[str] = sorted(
         + _ETFS
     )
 )
+
+
+def core_plus_expansion() -> list[str]:
+    """Core universe + the NYSE expansion tier, deduplicated and sorted.
+
+    Used by The Ted, which is rule-based (14 gates, no ML model) and therefore
+    has no training distribution to protect — it screens both tiers together.
+    The LEAPS scanner keeps the tiers separate; only The Ted unions them.
+    """
+    return sorted(set(DEFAULT_UNIVERSE) | set(_NYSE_EXPANSION))
 
 
 class UniverseBuilder:

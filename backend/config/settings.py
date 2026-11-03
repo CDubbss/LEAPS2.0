@@ -40,6 +40,14 @@ class Settings(BaseSettings):
     ML_MODEL_PATH: str = "backend/ml/artifacts/spread_ranker.joblib"
     ML_FEATURE_SCALER_PATH: str = "backend/ml/artifacts/feature_scaler.joblib"
 
+    # Outcomes DBs — core (the trained model's population) and the separate
+    # NYSE-expansion tier. Kept physically apart so the expansion population
+    # never shifts the core model's training set.
+    SPREAD_OUTCOMES_DB: str = "backend/ml/data/spread_outcomes.db"
+    SPREAD_OUTCOMES_DB_NYSE: str = "backend/ml/data/spread_outcomes_nyse.db"
+    # Separate model artifact for the expansion tier (placeholder until trained).
+    ML_MODEL_PATH_NYSE: str = "backend/ml/artifacts/spread_ranker_nyse.joblib"
+
     # Scanner defaults
     SCANNER_MIN_VOLUME: int = 100
     SCANNER_MIN_OPEN_INTEREST: int = 500
@@ -50,7 +58,17 @@ class Settings(BaseSettings):
     # Redis
     REDIS_URL: str = "redis://localhost:6379"
     CACHE_TTL_QUOTES: int = Field(default=60, ge=1, le=86400)
-    CACHE_TTL_FUNDAMENTALS: int = Field(default=86400, ge=1, le=604800)
+    # Fundamentals change quarterly, so a 24h TTL just burns the FMP free-tier
+    # budget (240 calls/day = ~48 symbols) re-fetching unchanged data and can
+    # never keep the ~587-symbol universe warm — most symbols expire before
+    # they are refetched and log NaN features (HANDOFF §4.9). 14 days lets the
+    # daily budget warm the whole universe within one TTL window.
+    CACHE_TTL_FUNDAMENTALS: int = Field(default=1_209_600, ge=1, le=2_592_000)
+    # Durable "last known good" fundamentals snapshot. Consulted only when a
+    # fresh fetch returns no core fundamentals (402 / budget exhausted) so the
+    # feature vector reuses the last real values instead of blanking to NaN.
+    CACHE_TTL_FUNDAMENTALS_LASTGOOD: int = Field(default=7_776_000, ge=1, le=15_552_000)
+    FUNDAMENTALS_LASTGOOD_FALLBACK: bool = True
     CACHE_TTL_CHAINS: int = Field(default=300, ge=1, le=86400)
     CACHE_TTL_SENTIMENT: int = Field(default=3600, ge=1, le=86400)
     CACHE_TTL_ML: int = Field(default=300, ge=1, le=86400)

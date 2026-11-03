@@ -1668,7 +1668,8 @@ def print_summary(db_path: str = DB_PATH) -> None:
         print(f"  {src:<20} {cnt:>6}  {wt:>6.2f}")
     print(f"  {'-'*44}")
 
-    # Strategy stats (50% target / 25% stop)
+    # Strategy stats (50% target / 50% stop — first-passage on +/-50%; see
+    # PROFIT_TARGET_PCT / STOP_LOSS_PCT. The old "25% stop" was pre-2026-07-09.)
     conn2 = sqlite3.connect(db_path)
     strat = conn2.execute("""
         SELECT strategy_result, COUNT(*), ROUND(AVG(days_to_target), 1)
@@ -1677,7 +1678,7 @@ def print_summary(db_path: str = DB_PATH) -> None:
         GROUP BY strategy_result
     """).fetchall()
     if strat:
-        print(f"  {'Strategy (50/25)':<20} {'Count':>6}  {'Avg days':>6}")
+        print(f"  {'Strategy (50/50)':<20} {'Count':>6}  {'Avg days':>6}")
         print(f"  {'-'*44}")
         total_strat = sum(r[1] for r in strat)
         wins = next((r for r in strat if r[0] == 'win'), None)

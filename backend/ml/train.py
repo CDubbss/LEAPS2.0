@@ -69,28 +69,44 @@ LABEL_WEIGHTS: dict[str, float] = {
 }
 
 
-def load_training_data(db_path: str) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+def _read_outcomes(db_path, query: str) -> pd.DataFrame:
+    """Read spread_outcomes rows from one DB, or UNION several schema-identical
+    DBs. Pass a list (e.g. the core + NYSE-expansion tiers) to train or evaluate
+    a single combined model over both: each DB is read with the same query and
+    the resulting frames are concatenated.
+    """
+    paths = [db_path] if isinstance(db_path, (str, bytes)) else list(db_path)
+    frames = []
+    for p in paths:
+        conn = sqlite3.connect(p)
+        try:
+            frames.append(pd.read_sql(query, conn))
+        finally:
+            conn.close()
+    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+
+
+def load_training_data(db_path) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     Load feature vectors, outcome scores, and sample weights from SQLite.
+
+    ``db_path`` is a single path, or a list of schema-identical DBs to UNION
+    (the core + NYSE-expansion tiers) for a combined model.
 
     Rows without a label_source (legacy rows labeled before tiering) are treated
     as expiry-weight (1.0) since they were finalized by the old pipeline.
     """
-    conn = sqlite3.connect(db_path)
-    try:
-        df = pd.read_sql(
-            # market_closed rows carry the prior session's chain under a
-            # non-trading entry_date — real quotes, wrong date, and often a
-            # near-duplicate that would straddle a CV fold boundary.
-            "SELECT features_json, outcome_score, label_source "
-            "FROM spread_outcomes "
-            "WHERE outcome_score IS NOT NULL "
-            "  AND COALESCE(market_closed, 0) = 0 "
-            "  AND spread_type NOT IN ('earnings_call', 'earnings_put')",
-            conn,
-        )
-    finally:
-        conn.close()
+    # market_closed rows carry the prior session's chain under a non-trading
+    # entry_date — real quotes, wrong date, and often a near-duplicate that would
+    # straddle a CV fold boundary.
+    df = _read_outcomes(
+        db_path,
+        "SELECT features_json, outcome_score, label_source "
+        "FROM spread_outcomes "
+        "WHERE outcome_score IS NOT NULL "
+        "  AND COALESCE(market_closed, 0) = 0 "
+        "  AND spread_type NOT IN ('earnings_call', 'earnings_put')",
+    )
 
     if df.empty:
         raise ValueError("No training data found in database")
@@ -213,26 +229,23 @@ def train(db_path: str, n_trials: int = 50) -> None:
     logger.info("Training metadata saved to %s", meta_path)
 
 
-def load_strategy_data(db_path: str) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+def load_strategy_data(db_path) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     Load features and binary win/loss labels for the strategy classifier.
 
+    ``db_path`` may be a single path or a list of schema-identical DBs to UNION.
     Only uses decided outcomes (win or loss) — 'open' rows are excluded.
     Sample weights use the same tier-based weighting as the ranker.
     """
-    conn = sqlite3.connect(db_path)
-    try:
-        df = pd.read_sql(
-            "SELECT features_json, strategy_result, label_source "
-            "FROM spread_outcomes "
-            "WHERE strategy_result IN ('win', 'loss') "
-            "  AND features_json IS NOT NULL "
-            "  AND COALESCE(market_closed, 0) = 0 "
-            "  AND spread_type NOT IN ('earnings_call', 'earnings_put')",
-            conn,
-        )
-    finally:
-        conn.close()
+    df = _read_outcomes(
+        db_path,
+        "SELECT features_json, strategy_result, label_source "
+        "FROM spread_outcomes "
+        "WHERE strategy_result IN ('win', 'loss') "
+        "  AND features_json IS NOT NULL "
+        "  AND COALESCE(market_closed, 0) = 0 "
+        "  AND spread_type NOT IN ('earnings_call', 'earnings_put')",
+    )
 
     if df.empty:
         raise ValueError("No strategy outcomes found — run label_outcomes first")
@@ -378,15 +391,49 @@ def init_database(db_path: str) -> None:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train SpreadRanker ML model")
     parser.add_argument("--data-path", default=DB_PATH)
+    parser.add_argument(
+        "--data-paths",
+        default=None,
+        help="Comma-separated schema-identical DBs to train a COMBINED model over "
+             "(e.g. the core + NYSE-expansion tiers). UNIONs their rows and "
+             "overrides --data-path. Pair with --model-out to keep the artifact separate.",
+    )
     parser.add_argument("--trials", type=int, default=50)
     parser.add_argument("--init-db", action="store_true", help="Initialize database only")
+    parser.add_argument(
+        "--model-out",
+        default=None,
+        help=(
+            "Output artifact path for the ranker (default: %s). The strategy "
+            "classifier, scaler and meta files are derived from it by name. Point "
+            "it at a separate path (e.g. .../spread_ranker_nyse.joblib) to train a "
+            "separate-tier model WITHOUT overwriting the core artifact." % MODEL_PATH
+        ),
+    )
     args = parser.parse_args()
+
+    # Redirect output artifacts for a separate-tier model. Rebinding the module
+    # globals leaves train()/train_strategy() untouched — they read these at call
+    # time. Names stay consistent (spread_ranker -> strategy_classifier ->
+    # feature_scaler) so model.py's load() derives the right sibling artifacts.
+    if args.model_out:
+        MODEL_PATH = args.model_out
+        STRATEGY_MODEL_PATH = args.model_out.replace("spread_ranker", "strategy_classifier")
+        SCALER_PATH = args.model_out.replace("spread_ranker", "feature_scaler")
+        logger.info("Output artifacts redirected to %s (and derived siblings)", MODEL_PATH)
+
+    # A combined (multi-tier) training set UNIONs several DBs; a single tier
+    # stays a plain path. init_database always targets one concrete DB.
+    data = args.data_path
+    if args.data_paths:
+        data = [p.strip() for p in args.data_paths.split(",") if p.strip()]
+        logger.info("Combined training over %d DBs: %s", len(data), data)
 
     if args.init_db:
         init_database(args.data_path)
     else:
-        train(args.data_path, args.trials)
+        train(data, args.trials)
         try:
-            train_strategy(args.data_path, args.trials)
+            train_strategy(data, args.trials)
         except ValueError as e:
             logger.warning("Skipping strategy classifier: %s", e)

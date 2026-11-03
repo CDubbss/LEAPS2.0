@@ -85,7 +85,19 @@ def _load_filters(config_path: Path) -> dict:
 # Scanner initialization (no FastAPI)
 # ---------------------------------------------------------------------------
 
-async def _build_scanner():
+def _resolve_tier(tier: str, settings) -> tuple[str, str, str]:
+    """Map a scan tier to (normalized_tier, model_path, outcome_db).
+
+    'nyse_expansion' routes to the separate artifact + outcomes DB; anything
+    else normalizes to 'core'. This is the single seam that keeps the expansion
+    population out of the core model's training set.
+    """
+    if tier == "nyse_expansion":
+        return "nyse_expansion", settings.ML_MODEL_PATH_NYSE, settings.SPREAD_OUTCOMES_DB_NYSE
+    return "core", settings.ML_MODEL_PATH, settings.SPREAD_OUTCOMES_DB
+
+
+async def _build_scanner(tier: str = "core"):
     import redis.asyncio as aioredis
 
     from backend.api.cache import RedisCache
@@ -95,12 +107,19 @@ async def _build_scanner():
     from backend.data.schwab_client import SchwabClient
     from backend.data.yfinance_client import YFinanceClient
     from backend.ml.model import SpreadRanker
+    from backend.ml.outcome_logger import OutcomeLogger
     from backend.scanner.scanner import OptionsScanner
     from backend.sentiment.aggregator import SentimentAggregator
     from backend.sentiment.finbert_loader import FinBERTLoader
     from backend.sentiment.sentiment_scorer import SentimentScorer
 
     settings = get_settings()
+
+    # Resolve the tier -> which model artifact + outcomes DB this scan writes.
+    # The expansion tier stays on separate paths so it never shifts the core
+    # model's training population.
+    tier, model_path, outcome_db = _resolve_tier(tier, settings)
+    logger.info("Scan tier: %s  (model=%s, outcomes_db=%s)", tier, model_path, outcome_db)
 
     # Redis — RedisCache catches connection errors and falls back to in-memory
     redis_client = aioredis.from_url(settings.REDIS_URL, decode_responses=True)
@@ -117,9 +136,10 @@ async def _build_scanner():
     finbert.load()
     logger.info("FinBERT ready.")
 
-    # ML model — placeholder until trained
+    # ML model — placeholder until trained (the expansion tier stays placeholder
+    # until its own DB has enough labeled rows to train spread_ranker_nyse).
     ml_ranker = SpreadRanker(
-        model_path=settings.ML_MODEL_PATH,
+        model_path=model_path,
         scaler_path=settings.ML_FEATURE_SCALER_PATH,
     )
     ml_ranker.load()
@@ -146,6 +166,7 @@ async def _build_scanner():
         ml_ranker=ml_ranker,
         cache=cache,
         settings=settings,
+        outcome_logger=OutcomeLogger(db_path=outcome_db, universe_tier=tier),
     )
 
     return scanner, redis_client
@@ -155,17 +176,17 @@ async def _build_scanner():
 # Main scan
 # ---------------------------------------------------------------------------
 
-async def run_scan(filters_override: dict, dry_run: bool = False) -> None:
+async def run_scan(filters_override: dict, dry_run: bool = False, tier: str = "core") -> None:
     from backend.models.scanner import ScannerFilters
 
     filters = ScannerFilters(**filters_override)
 
     if dry_run:
-        logger.info("[DRY RUN] Filters that would be used:")
+        logger.info("[DRY RUN] tier=%s  Filters that would be used:", tier)
         logger.info("%s", filters.model_dump_json(indent=2))
         return
 
-    scanner, redis_client = await _build_scanner()
+    scanner, redis_client = await _build_scanner(tier)
 
     logger.info(
         "Starting scan — strategies=%s  universe=%s  leaps_dte=%d–%d",
@@ -246,9 +267,12 @@ def main() -> None:
         )
 
     filters_override = _load_filters(Path(args.config))
+    # 'tier' is a scan-tier selector, not a ScannerFilters field — pop it before
+    # the filters are validated. Default 'core' keeps existing configs working.
+    tier = filters_override.pop("tier", "core")
 
     try:
-        asyncio.run(run_scan(filters_override, dry_run=args.dry_run))
+        asyncio.run(run_scan(filters_override, dry_run=args.dry_run, tier=tier))
     except KeyboardInterrupt:
         logger.info("Scan interrupted.")
     except Exception as e:

@@ -53,8 +53,12 @@ class OutcomeLogger:
     Thread-safe for single-writer use (SQLite serialized writes).
     """
 
-    def __init__(self, db_path: str = DB_PATH):
+    def __init__(self, db_path: str = DB_PATH, universe_tier: str = "core"):
         self.db_path = db_path
+        # Tier tag stamped on every row this logger writes ('core' |
+        # 'nyse_expansion'). Keeps the core and expansion DBs schema-identical
+        # so they can be ATTACH+UNION'd for combined review / a joint model.
+        self.universe_tier = universe_tier
         self._engineer = FeatureEngineer()
         try:
             self._ensure_schema()
@@ -187,6 +191,7 @@ class OutcomeLogger:
                 horizon_days,
                 near_miss,
                 market_closed,
+                self.universe_tier,
             ))
 
         # Write spread candidates first — this is the critical write.
@@ -201,8 +206,9 @@ class OutcomeLogger:
                         scan_id, symbol, spread_type, expiration, entry_date,
                         outcome_score, features_json, contract_json,
                         entry_net_debit, long_mid_at_entry, short_mid_at_entry,
-                        spot_at_entry, horizon_days, near_miss, market_closed
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        spot_at_entry, horizon_days, near_miss, market_closed,
+                        universe_tier
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     rows,
                 )
@@ -301,6 +307,12 @@ class OutcomeLogger:
             ("days_to_stop",        "INTEGER"),
             ("strategy_pnl",        "REAL"),
             ("near_miss",           "INTEGER DEFAULT 0"),
+            # market_closed is otherwise only added by label_outcomes._migrate();
+            # include it here so a fresh DB (e.g. the NYSE-expansion tier) created
+            # by OutcomeLogger alone has every column the INSERT writes.
+            ("market_closed",       "INTEGER DEFAULT 0"),
+            # Tier provenance for the combined-read / joint-model path.
+            ("universe_tier",       "TEXT DEFAULT 'core'"),
         ]
         for col, typedef in new_cols:
             try:

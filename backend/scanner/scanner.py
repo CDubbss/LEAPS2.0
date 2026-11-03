@@ -66,6 +66,7 @@ class OptionsScanner:
         cache: RedisCache,
         settings: Optional[Settings] = None,
         schwab_client: Optional[SchwabClient] = None,
+        outcome_logger: Optional[OutcomeLogger] = None,
     ):
         self.yf = yf_client
         self.schwab = schwab_client  # None until token file exists
@@ -87,7 +88,9 @@ class OptionsScanner:
         self.spread_constructor = SpreadConstructor()
         self.fundamentals_scorer = FundamentalsScorer()
         self.risk_scorer = RiskScorer()
-        self.outcome_logger = OutcomeLogger()
+        # Injected so a scan can route its rows to a tier-specific DB
+        # (core -> spread_outcomes.db, expansion -> spread_outcomes_nyse.db).
+        self.outcome_logger = outcome_logger or OutcomeLogger()
         self._feature_engineer = None  # lazy-init to avoid circular import
 
     async def scan(self, filters: ScannerFilters) -> ScannerResult:
@@ -472,19 +475,46 @@ class OptionsScanner:
     ) -> dict[str, FundamentalData]:
         """Stage 4: Fetch and score fundamentals for all unique symbols (cached)."""
         ttl = self.settings.CACHE_TTL_FUNDAMENTALS
+        lastgood_ttl = self.settings.CACHE_TTL_FUNDAMENTALS_LASTGOOD
+        use_lastgood = self.settings.FUNDAMENTALS_LASTGOOD_FALLBACK
 
         async def fetch_one(symbol: str) -> FundamentalData:
             async with FMP_SEMAPHORE:
                 cache_key = f"fundamentals:{symbol}"
                 cached = await self.cache.get(cache_key)
                 if cached:
-                    return FundamentalData(**cached)
-                fund = await self.fmp.get_full_fundamentals(symbol)
-                fund = self.fundamentals_scorer.score(fund)
-                # Only cache if we got real data. An empty company_name means
-                # FMP returned 429/error — don't cache so the next scan retries.
-                if fund.company_name:
-                    await self.cache.set(cache_key, fund, ttl)
+                    fund = FundamentalData(**cached)
+                else:
+                    fund = await self.fmp.get_full_fundamentals(symbol)
+                    fund = self.fundamentals_scorer.score(fund)
+                    # Only cache if we got real data. An empty company_name means
+                    # FMP returned 429/error — don't cache so the next scan retries.
+                    if fund.company_name:
+                        await self.cache.set(cache_key, fund, ttl)
+
+                if not use_lastgood:
+                    return fund
+
+                # Durable last-good fallback (HANDOFF §4.9). FMP's free tier 402s
+                # on the metrics/income/balance endpoints, blanking pe_ratio /
+                # revenue_growth / gross_margin / debt_to_equity to NaN even when
+                # the /profile call succeeds — so company_name alone is not proof
+                # of real fundamentals. Keep a long-lived snapshot of the last
+                # fetch that carried real values and reuse it instead of logging
+                # NaN into the training feature vector.
+                lastgood_key = f"fundamentals_lastgood:{symbol}"
+                if _has_core_fundamentals(fund):
+                    await self.cache.set(lastgood_key, fund, lastgood_ttl)
+                    return fund
+                stale = await self.cache.get(lastgood_key)
+                if stale:
+                    sfund = FundamentalData(**stale)
+                    if _has_core_fundamentals(sfund):
+                        logger.debug(
+                            "Fundamentals last-good fallback for %s "
+                            "(fresh fetch had no core fundamentals)", symbol,
+                        )
+                        return sfund
                 return fund
 
         tasks = [fetch_one(sym) for sym in symbols]
@@ -777,6 +807,25 @@ def _apply_spread_filters(
             continue
         out.append(s)
     return out
+
+
+def _has_core_fundamentals(fund: FundamentalData) -> bool:
+    """True if at least one core valuation / growth / leverage field is populated.
+
+    Used to decide whether a fundamentals fetch carried real signal or was
+    blanked by an FMP 402 / budget exhaustion (HANDOFF §4.9). company_name alone
+    is not sufficient — the /profile call can succeed while the metrics / income
+    / balance calls 402, leaving these fields NaN.
+    """
+    return any(
+        getattr(fund, field, None) is not None
+        for field in (
+            "pe_ratio",
+            "revenue_growth_yoy",
+            "gross_margin",
+            "debt_to_equity",
+        )
+    )
 
 
 def _neutral_sentiment(symbol: str) -> TickerSentiment:

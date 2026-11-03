@@ -52,14 +52,28 @@ export const TedPage: React.FC = () => {
   const [tracked, setTracked] = useState(false);
 
   useEffect(() => {
-    tedApi
-      .getCandidates()
-      .then((r) => {
-        setCandidates(r.candidates);
-        setCandMessage(r.message);
-      })
-      .catch((e) => setCandMessage(e instanceof Error ? e.message : "Failed to load"))
-      .finally(() => setCandLoading(false));
+    let tries = 0;
+    let timer: number | undefined;
+    const load = () => {
+      tedApi
+        .getCandidates()
+        .then((r) => {
+          setCandidates(r.candidates);
+          setCandMessage(r.message);
+          // Cold start: the backend builds the list from the earnings calendar
+          // in the background. Poll briefly until it lands (then stop).
+          if (r.building && tries < 6) {
+            tries += 1;
+            timer = window.setTimeout(load, 6000);
+          }
+        })
+        .catch((e) => setCandMessage(e instanceof Error ? e.message : "Failed to load"))
+        .finally(() => setCandLoading(false));
+    };
+    load();
+    return () => {
+      if (timer) window.clearTimeout(timer);
+    };
   }, []);
 
   useEffect(() => {
@@ -178,29 +192,125 @@ export const TedPage: React.FC = () => {
               {candMessage || "No universe tickers report earnings in the window."}
             </p>
           )}
-          {candidates.map((c) => (
-            <button
-              key={c.symbol}
-              onClick={() => selectSymbol(c.symbol)}
-              className={`w-full flex items-center justify-between px-2 py-1.5 rounded text-xs transition-colors ${
-                symbol === c.symbol
-                  ? "bg-sky-900/50 text-white border border-sky-700"
-                  : "text-gray-300 hover:bg-gray-800 border border-transparent"
-              }`}
-            >
-              <span className="font-bold">{c.symbol}</span>
-              <span
-                className={`px-1.5 py-0.5 rounded text-[10px] font-mono ${
-                  c.ideal
-                    ? "bg-green-900/50 text-green-300"
-                    : "bg-amber-900/40 text-amber-300"
+          {candidates.map((c, i) => {
+            const prescreened = c.qualifies !== undefined;
+            const tier = c.tier ?? "weak";
+            const prevTier = i > 0 ? candidates[i - 1].tier ?? "weak" : null;
+            const showHeader = prescreened && tier !== prevTier;
+            const tierLabel =
+              tier === "pass_all"
+                ? "✓ Passes all gates"
+                : tier === "pass_most"
+                ? "~ Passes most gates"
+                : "· In window — fails gates";
+            const tierColor =
+              tier === "pass_all"
+                ? "text-green-400"
+                : tier === "pass_most"
+                ? "text-amber-400"
+                : "text-gray-600";
+            return (
+              <React.Fragment key={c.symbol}>
+              {showHeader && (
+                <div
+                  className={`px-1 pt-2 pb-0.5 text-[9px] font-semibold uppercase tracking-wide ${tierColor}`}
+                >
+                  {tierLabel}
+                </div>
+              )}
+              <button
+                onClick={() => selectSymbol(c.symbol)}
+                className={`w-full flex flex-col gap-0.5 px-2 py-1.5 rounded text-xs transition-colors ${
+                  symbol === c.symbol
+                    ? "bg-sky-900/50 text-white border border-sky-700"
+                    : `text-gray-300 hover:bg-gray-800 border border-transparent ${
+                        tier === "pass_all"
+                          ? "border-l-2 border-l-green-600"
+                          : tier === "pass_most"
+                          ? "border-l-2 border-l-amber-600"
+                          : ""
+                      }`
                 }`}
-                title={`Earnings ${c.earnings_date}${c.ideal ? " — ideal 10-12d window" : ""}`}
               >
-                {c.days_out}d
-              </span>
-            </button>
-          ))}
+                <div className="flex items-center justify-between w-full">
+                  <span className="font-bold">{c.symbol}</span>
+                  <span className="flex items-center gap-1.5">
+                    {c.gates_passed != null && (
+                      <span
+                        className="text-[9px] font-mono text-gray-400"
+                        title={`${c.gates_passed} of ${c.gates_total} auto-gates passed (${c.verdict})`}
+                      >
+                        {c.gates_passed}/{c.gates_total}
+                      </span>
+                    )}
+                    <span
+                      className={`px-1.5 py-0.5 rounded text-[10px] font-mono ${
+                        c.ideal
+                          ? "bg-green-900/50 text-green-300"
+                          : "bg-amber-900/40 text-amber-300"
+                      }`}
+                      title={`Earnings ${c.earnings_date}${c.ideal ? " — ideal 10-12d window" : ""}`}
+                    >
+                      {c.days_out}d
+                    </span>
+                  </span>
+                </div>
+                {prescreened && (
+                  <div className="flex items-center gap-1.5 text-[9px] leading-none flex-wrap">
+                    <span
+                      className={c.qualifies ? "text-green-400" : "text-gray-600"}
+                      title={
+                        c.qualifies
+                          ? `Expiry ${c.qualifying_expiry} — 1-2 days past earnings (Gate 2 passes)`
+                          : "No listed expiry 1-2 days past earnings — Gate 2 fails"
+                      }
+                    >
+                      {c.qualifies ? "✓ expiry" : "✗ expiry"}
+                    </span>
+                    {c.inferred_direction && (
+                      <span
+                        className={c.inferred_direction === "bull" ? "text-green-400" : "text-rose-400"}
+                        title={`Thesis inferred from 5-session drift: ${c.inferred_direction} → ${c.option_side} (Gate 4 — confirm/override in the check)`}
+                      >
+                        {c.inferred_direction === "bull" ? "▲ call" : "▼ put"}
+                      </span>
+                    )}
+                    {c.entry_iv != null && (
+                      <span
+                        className={
+                          c.iv_room === false ? "text-amber-400" : "text-gray-400"
+                        }
+                        title={
+                          c.iv_room === false
+                            ? `ATM IV ${c.entry_iv}% — already >20pts over its 90d HV, buildup may be priced in (Gate 12)`
+                            : `ATM IV ${c.entry_iv}% — room to run vs 90d HV (Gate 12)`
+                        }
+                      >
+                        IV {c.entry_iv}%{c.iv_room === false ? "!" : ""}
+                      </span>
+                    )}
+                    {c.big_mover && (
+                      <span
+                        className="text-amber-400"
+                        title={`${c.big_mover_count}/8 past earnings moved ≥8% (Gate 7)`}
+                      >
+                        ⚡ mover
+                      </span>
+                    )}
+                    {c.attention && (
+                      <span
+                        className="text-sky-400"
+                        title="High market attention — large cap or deep chain OI (Gate 6)"
+                      >
+                        liq
+                      </span>
+                    )}
+                  </div>
+                )}
+              </button>
+              </React.Fragment>
+            );
+          })}
         </div>
       </aside>
 
