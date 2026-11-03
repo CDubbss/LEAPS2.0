@@ -213,8 +213,11 @@ def main() -> None:
     if args.symbols:
         symbols = [s.strip().upper() for s in args.symbols.split(",") if s.strip()]
     else:
-        from backend.scanner.universe import DEFAULT_UNIVERSE
-        symbols = list(DEFAULT_UNIVERSE)
+        # The Ted is rule-based (no model to protect), so it screens the union of
+        # the core universe and the NYSE-expansion tier. Identical to the core
+        # universe until _NYSE_EXPANSION is populated.
+        from backend.scanner.universe import core_plus_expansion
+        symbols = core_plus_expansion()
         if args.limit > 0:
             symbols = symbols[: args.limit]
 

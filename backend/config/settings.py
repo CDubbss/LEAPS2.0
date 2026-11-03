@@ -40,6 +40,14 @@ class Settings(BaseSettings):
     ML_MODEL_PATH: str = "backend/ml/artifacts/spread_ranker.joblib"
     ML_FEATURE_SCALER_PATH: str = "backend/ml/artifacts/feature_scaler.joblib"
 
+    # Outcomes DBs — core (the trained model's population) and the separate
+    # NYSE-expansion tier. Kept physically apart so the expansion population
+    # never shifts the core model's training set.
+    SPREAD_OUTCOMES_DB: str = "backend/ml/data/spread_outcomes.db"
+    SPREAD_OUTCOMES_DB_NYSE: str = "backend/ml/data/spread_outcomes_nyse.db"
+    # Separate model artifact for the expansion tier (placeholder until trained).
+    ML_MODEL_PATH_NYSE: str = "backend/ml/artifacts/spread_ranker_nyse.joblib"
+
     # Scanner defaults
     SCANNER_MIN_VOLUME: int = 100
     SCANNER_MIN_OPEN_INTEREST: int = 500

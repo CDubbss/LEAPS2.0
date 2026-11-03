@@ -66,6 +66,7 @@ class OptionsScanner:
         cache: RedisCache,
         settings: Optional[Settings] = None,
         schwab_client: Optional[SchwabClient] = None,
+        outcome_logger: Optional[OutcomeLogger] = None,
     ):
         self.yf = yf_client
         self.schwab = schwab_client  # None until token file exists
@@ -87,7 +88,9 @@ class OptionsScanner:
         self.spread_constructor = SpreadConstructor()
         self.fundamentals_scorer = FundamentalsScorer()
         self.risk_scorer = RiskScorer()
-        self.outcome_logger = OutcomeLogger()
+        # Injected so a scan can route its rows to a tier-specific DB
+        # (core -> spread_outcomes.db, expansion -> spread_outcomes_nyse.db).
+        self.outcome_logger = outcome_logger or OutcomeLogger()
         self._feature_engineer = None  # lazy-init to avoid circular import
 
     async def scan(self, filters: ScannerFilters) -> ScannerResult:
