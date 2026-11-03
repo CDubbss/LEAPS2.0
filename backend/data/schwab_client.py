@@ -378,6 +378,31 @@ class SchwabClient:
 
         return await self._run(_fetch)
 
+    async def get_quotes_raw(self, symbols: list[str]) -> dict[str, dict]:
+        """Raw Schwab quote entries for many symbols in ONE batched request.
+
+        Returns ``{symbol: entry}`` for every symbol Schwab resolved; symbols it
+        could not resolve are grouped by Schwab under an ``"errors"`` key, which
+        is dropped (an absent symbol in the returned dict means "Schwab did not
+        resolve it"). Each ``entry`` carries the usual ``quote`` / ``fundamental``
+        sub-blocks (price, avg volume, shares outstanding, …).
+
+        Used by the NYSE-expansion builder to screen price / volume / market cap
+        across the universe cheaply. HTTP/network errors PROPAGATE to the caller
+        so it can retry/back off — they are never swallowed into empty data (that
+        was the yfinance builder's silent-truncation bug).
+        """
+        if not self.is_available:
+            raise RuntimeError("SchwabClient not available")
+
+        def _fetch():
+            r = self._client.get_quotes(symbols)
+            r.raise_for_status()
+            return r.json()
+
+        data = await self._run(_fetch)
+        return {s: e for s, e in data.items() if s != "errors" and isinstance(e, dict)}
+
     async def get_expirations(self, symbol: str) -> list[str]:
         """Return sorted list of available expiration date strings (YYYY-MM-DD)."""
         if not self.is_available:
