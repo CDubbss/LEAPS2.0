@@ -151,6 +151,49 @@ Write-Host "  Name     : $tedTaskName"
 Write-Host "  Schedule : Weekdays (Mon-Fri) at 8:45 AM MT (skips NYSE holidays in code)"
 Write-Host "  Log file : $tedLogFile"
 
+# ---------------------------------------------------------------------------
+# Task 4: NYSE Expansion Scan — the separate expansion tier (own DB + model)
+# ---------------------------------------------------------------------------
+# Scans _NYSE_EXPANSION into spread_outcomes_nyse.db (NOT the core DB), then
+# labels that DB. Staggered off the core scan's 8:30/1:30 window to avoid
+# yfinance/FMP rate-limit collisions. No-op until _NYSE_EXPANSION is populated
+# by backend/scripts/build_nyse_expansion.py.
+$nyseTaskName = "Leaps2.0 - NYSE Expansion Scan"
+$nyseConfig   = "$root\backend\scripts\scan_config_nyse.json"
+$nyseLogFile  = "$logDir\nyse_expansion_scan.log"
+$nyseDb       = "$root\backend\ml\data\spread_outcomes_nyse.db"
+
+$nyseCmdArgs = "/c `"echo [%DATE% %TIME%] Starting nyse_expansion_scan >> `"$nyseLogFile`" 2>&1 && cd /d `"$root`" && `"$python`" -m backend.scripts.scheduled_scan --config `"$nyseConfig`" >> `"$nyseLogFile`" 2>&1 && `"$python`" -m backend.ml.label_outcomes --db-path `"$nyseDb`" >> `"$nyseLogFile`" 2>&1 && echo [%DATE% %TIME%] Done >> `"$nyseLogFile`" 2>&1`""
+
+$nyseAction = New-ScheduledTaskAction -Execute "cmd.exe" -Argument $nyseCmdArgs
+# Weekdays only, DST-pinned (same idiom as the Ted task). Two staggered runs.
+$nyseTrigMorning   = New-ScheduledTaskTrigger -Weekly -DaysOfWeek Monday,Tuesday,Wednesday,Thursday,Friday -At "09:15AM"
+$nyseTrigAfternoon = New-ScheduledTaskTrigger -Weekly -DaysOfWeek Monday,Tuesday,Wednesday,Thursday,Friday -At "02:00PM"
+$nyseTrigMorning.StartBoundary   = (Get-Date "09:15:00").ToString("yyyy-MM-ddTHH:mm:ss")
+$nyseTrigAfternoon.StartBoundary = (Get-Date "14:00:00").ToString("yyyy-MM-ddTHH:mm:ss")
+$nyseSettings = New-ScheduledTaskSettingsSet `
+    -Hidden `
+    -ExecutionTimeLimit (New-TimeSpan -Hours 2) `
+    -StartWhenAvailable `
+    -RunOnlyIfNetworkAvailable `
+    -MultipleInstances IgnoreNew
+
+Register-ScheduledTask `
+    -TaskName $nyseTaskName `
+    -Action $nyseAction `
+    -Trigger @($nyseTrigMorning, $nyseTrigAfternoon) `
+    -Settings $nyseSettings `
+    -Description "Leaps2.0: separate NYSE-expansion tier scan. Writes spread_outcomes_nyse.db + spread_ranker_nyse (isolated from the core model), then labels it. Weekdays only; skips NYSE holidays in code." `
+    -Force | Out-Null
+
+Write-Host ""
+Write-Host "Task registered:" -ForegroundColor Green
+Write-Host "  Name     : $nyseTaskName"
+Write-Host "  Schedule : Weekdays (Mon-Fri) at 9:15 AM and 2:00 PM MT (skips NYSE holidays in code)"
+Write-Host "  Config   : $nyseConfig"
+Write-Host "  Log file : $nyseLogFile"
+Write-Host "  DB       : $nyseDb  (separate from the core model's DB)"
+
 Write-Host ""
 Write-Host "To run scan immediately:" -ForegroundColor Cyan
 Write-Host "  Start-ScheduledTask -TaskName '$scanTaskName'"
